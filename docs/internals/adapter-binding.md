@@ -182,6 +182,9 @@ factors:
   copy of W for the
   norm of W + dW, then computes `y + m ((s - 1) W x + s dW x)` (output axis) or
   `y + m (W' (c x) - y)` (input axis) from the base forward and the bypass delta;
+  a NaRA delta (`bind.dora.nara_out` / `nara_out_biased` / `nara_in`) recomputes the
+  ratio per sample from the live cores every forward, in fp32 — no static-BA cache
+  or fused kernel;
 - inference (`adapters.infer.stored`) attaches every kind as a bypass chain on such a base,
   whatever the mode (a requested merge falls back with one log line); a rotation or
   channel kind reads the unfolded base output through `org_forward` under an fp16 fold,

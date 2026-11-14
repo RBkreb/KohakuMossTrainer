@@ -49,7 +49,8 @@ backbone's own weights train and no LyCORIS module is built.
 - **NaRA** takes `nara_hidden1`, `nara_hidden2`, `nara_embed_dim`, `nara_embed`
   (`fourier` / `mlp` / `raw`), `nara_fourier_scale`, `nara_c_scale` (the shared
   hypernetwork) and `export_sigma` (the fixed noise level of its ComfyUI / merged
-  exports); it rejects rank dropout and DoRA.
+  exports); it rejects rank dropout. DoRA composes: the magnitude normalizes after
+  the live core, per forward in fp32.
 - **DoRA** rejects input dropout (LyCORIS ignores it).
 - **`TRAIN_NORMS=True`** adds a trained delta to the norms the preset covers
   (`adapters.train.norms.NormDelta`, a parametrization: `weight = original + m *
@@ -164,9 +165,9 @@ on a folded model renders correctly on an unfolded one and the reverse.
 
 | mode | how the adapters apply |
 | --- | --- |
-| `bypass` | stacks each adapter's forward on the previous one. On a dense base low-rank paths stay factorised; DoRA, dense diffs, DyLoRA and OFT at multiplier != 1 apply a dW held once in the layer's compute dtype, computed against the layer's current effective weight (the base plus every adapter stacked before it), as `merge` does |
+| `bypass` | stacks each adapter's forward on the previous one. On a dense base low-rank paths stay factorised; DoRA, dense diffs, DyLoRA and OFT at multiplier != 1 apply a dW held once in the layer's compute dtype, computed against the layer's current effective weight (the base plus every adapter stacked before it), as `merge` does; a NaRA delta instead runs its dynamic core, and its DoRA ratio is recomputed from the live cores every forward |
 | `merge` | adds dW into the base weights, summed in fp32 and rounded once |
-| either, on a quantized / streamed base | every kind attaches as a bypass chain (a merge request falls back with one log line): DoRA keeps only its per-row (or per-column) ratio, computed once from a transient copy of the effective weight, and a dense-diff file is refused |
+| either, on a quantized / streamed base | every kind attaches as a bypass chain (a merge request falls back with one log line): a fixed DoRA keeps only its per-row (or per-column) ratio, computed once from a transient copy of the effective weight (a NaRA DoRA recomputes it every forward), and a dense-diff file is refused |
 
 - Loaded modules run their own methods (LyCORIS picks the backend per call).
 - `remove()` restores every touched weight and forward bit-exactly; `undoable=False`

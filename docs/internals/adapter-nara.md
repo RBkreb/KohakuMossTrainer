@@ -132,10 +132,14 @@ Where the core sits, per variant (`C = C(sigma)` of the current sample):
   rejected at construction (lower `DIM`, raise `ALGO_KWARGS["factor"]`;
   `algo_lokr_nara` composes factor 8 with DIM 16).
 
-DoRA composes with the switch on every variant: the delta stays per sample while the
-magnitude is the fixed export-sigma one, so the DoRA bypass route (`bypass_out` /
-`bypass_in`) runs on dense bases too. Exports follow the fixed-sigma rules above with
-the core folded into the up factors (`lora_up`, both `hada_w*_a`, `lokr_w2_a`), and
-the `lycoris` format keeps the per-layer factors of the base algorithm plus the
-`nara_hyper` stem — the hypernetwork stem names the kind on load, the tensor names
-pick the variant.
+DoRA composes with the switch on every variant: the normalization happens after the
+live `BA*C(sigma)`, so the magnitude ratio `m / ||W + dW(sigma)||` is recomputed every
+forward, per sample, in fp32 (`NaraMixin.dora_ratio`; the LoRA and LoKr variants expand
+`||W + dW||^2 = ||W||^2 + 2<W, dW> + ||dW||^2` so no per-sample dense delta is built,
+LoHa rebuilds one as its bypass already does). Every static-BA optimization — the
+load-time ratio cache, the fused decompose kernels — is bypassed while the core is
+dynamic; the ratio is applied in fp32 and rounded once with the output. Exports follow
+the fixed-sigma rules above with the core folded into the up factors (`lora_up`, both
+`hada_w*_a`, `lokr_w2_a`), and the `lycoris` format keeps the per-layer factors of the
+base algorithm plus the `nara_hyper` stem — the hypernetwork stem names the kind on
+load, the tensor names pick the variant.
