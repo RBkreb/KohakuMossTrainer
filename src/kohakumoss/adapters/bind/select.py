@@ -69,7 +69,9 @@ def _stored_dora(t: Target):
 
 def _dora(t: Target, ctx: BindCtx):
     detach = ctx.detach and ctx.training
-    if t.stored:
+    if t.stored or t.record.needs_sigma:
+        # A stored base, or a per-sample delta (the magnitude stays the fixed
+        # export-sigma one): the DoRA bypass route on either base.
         fn = _stored_dora(t)
         return partial(fn, t.layer, t.base_fn, t.unit_fn, t.lyco, ctx.m, detach)
     mix, lin = compose.mix_of(ctx.m), compose.lin_of(t)

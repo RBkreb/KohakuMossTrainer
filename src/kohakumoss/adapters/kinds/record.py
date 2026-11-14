@@ -70,7 +70,13 @@ class Kind:
     loraplus_tensors: tuple[str, ...] = ()
     # Ranks masked per token (T-LoRA).
     per_token_mask: bool = False
+    # The kind reads the step's noise-level context (NaRA).
+    needs_sigma: bool = False
+    # (config) -> one module shared by every layer of the set (NaRA's hypernetwork).
+    shared_module: Callable | None = None
     supports_dora: bool = False
+    # The NARA switch may condition this kind's delta on the noise level.
+    supports_nara: bool = False
     training_dependent: bool = False
     # (t, generator) -> this step's random draws of the layer.
     draw_step: Callable | None = None

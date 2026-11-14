@@ -261,7 +261,11 @@ class KernelForward:
         """`tick()` after each layer (over every pack)."""
         place = self.placement
         hs = [place.embed(p.ids) for p in packs]
-        ropes = [self.text.rotary_emb(h, p.pos[None]) for h, p in zip(hs, packs)]
+        # text-only mrope: the three sections share the text positions
+        ropes = [
+            self.text.rotary_emb(h, p.pos[None].expand(3, -1, -1))
+            for h, p in zip(hs, packs)
+        ]
         ropes = [(c[0][:, None, :], s[0][:, None, :]) for c, s in ropes]
         for i, block in enumerate(self.blocks):
             place.enter[i]()

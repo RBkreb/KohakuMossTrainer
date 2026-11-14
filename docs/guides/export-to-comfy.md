@@ -143,6 +143,7 @@ strength 1:
 | IA3 | `diff` | the full dW, loaded by ComfyUI's `diff` adapter |
 | DyLoRA | `lora_up.weight`, `lora_down.weight`, `alpha = rank` | every rank, eval scale folded into up |
 | T-LoRA | rank-2r LoRA | `[P*lam*s, -P0*lam0*s] @ [Q ; Q0]`, no rank mask |
+| NaRA | LoRA at `export_sigma` | `up = B C(sigma)^T s`, `down = A`: one fixed noise level, the hypernetwork stays in the native format |
 | full | `diff`, `diff_b` | none |
 | norms | `w_norm`, `b_norm` | none |
 

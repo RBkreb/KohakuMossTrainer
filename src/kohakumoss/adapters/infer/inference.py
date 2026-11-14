@@ -13,6 +13,7 @@ from kohakumoss.adapters.build.apply import apply, compute_device
 from kohakumoss.adapters.build.config import inference_config
 from kohakumoss.adapters.build.network import lora_name_of
 from kohakumoss.adapters.build.target import (
+    SHARED,
     Target,
     base_forward,
     base_kind,
@@ -21,11 +22,13 @@ from kohakumoss.adapters.build.target import (
 )
 from kohakumoss.adapters.export.convert import row_norm
 from kohakumoss.adapters.export.fused import split_qkv
-from kohakumoss.adapters.infer import stored
+from kohakumoss.adapters.infer import nara_build, stored
 from kohakumoss.adapters.infer.formats import config_from_meta, group, read, stem_index
 from kohakumoss.adapters.kinds import record_of
 from kohakumoss.adapters.kinds.record import Stacking
 from kohakumoss.adapters.lycoris.backend import pick_backend
+from kohakumoss.adapters.nara import load as nara_load
+from kohakumoss.adapters.nara.module import NaraMixin
 from kohakumoss.adapters.train.adapter_set import (
     FULL_TAG,
     RAW_TAG,
@@ -197,6 +200,12 @@ class AdapterStack:
             )
         if meta.get(RAW_TAG):
             tensors = self._raw_tensors(tensors, meta)
+        hyper_tensors, tensors = nara_load.split_tensors(tensors)
+        hyper = (
+            nara_load.hyper_from(hyper_tensors, meta, self.device)
+            if hyper_tensors
+            else None
+        )
         groups, unmatched = group(split_qkv(tensors), self.index)
         if unmatched:
             raise KeyError(
@@ -204,8 +213,14 @@ class AdapterStack:
             )
         ours_comfy = meta.get("kohakumoss_format") == "comfy"
         for path, parts in groups.items():
-            self._add_layer(path, parts, multiplier, ours_comfy)
+            self._add_layer(path, parts, multiplier, ours_comfy, hyper)
         rebind_owner(self.model)
+
+    @property
+    def needs_sigma(self) -> bool:
+        """A loaded adapter reads the step's noise level (NaRA): sampling must pass
+        its `on_sigma` hook."""
+        return any(isinstance(m, NaraMixin) for m in self.live)
 
     def _add_norm(self, module: nn.Module, parts: dict, m: float) -> None:
         self._add_to(module, "weight", parts["w_norm"].float() * m)
@@ -226,7 +241,9 @@ class AdapterStack:
             w = w + dw().to(w.device)
         return w
 
-    def _add_layer(self, path: str, parts: dict, m: float, ours_comfy: bool) -> None:
+    def _add_layer(
+        self, path: str, parts: dict, m: float, ours_comfy: bool, hyper=None
+    ) -> None:
         module = self.modules[path]
         if "w_norm" in parts:
             self._add_norm(module, parts, m)
@@ -245,7 +262,7 @@ class AdapterStack:
             self._add_dense(path, module, dw, db, scale)
             return
         with _Unfolded(module, None if on_stored else scale):
-            lyco = self._build(module, path, parts)
+            lyco = self._build(module, path, parts, hyper)
         if on_stored:
             if ours_comfy:
                 self._undo_comfy(module, lyco, parts, self._unfolded_base(module, path))
@@ -275,9 +292,17 @@ class AdapterStack:
                 scale, block
             )
             dense = dense or not uniform
-        if self.mode == "merge" or target.wd or dense:
+        if self.mode == "merge" or dense or (target.wd and not rec.needs_sigma):
             dw, db = target.delta(m)
             self._add_dense(path, module, dw, db, scale)
+            return
+        if target.wd:
+            # A per-sample delta: the DoRA bypass with the module's dynamic core, its
+            # ratio taken once from the effective unfolded weight.
+            self._chain(module, self._stored_dora(path, module, target, m, scale))
+            self.earlier.setdefault(path, []).append(
+                partial(_first, target.delta_at(m))
+            )
             return
         lyco.multiplier = m
         lyco.bypass_mode = True
@@ -357,10 +382,12 @@ class AdapterStack:
         add = partial(_dense_add_bias, dense, dw, db)
         self._chain(module, lambda prev: partial(add, prev))
 
-    def _build(self, linear: nn.Module, path: str, parts: dict):
+    def _build(self, linear: nn.Module, path: str, parts: dict, hyper=None):
         name = lora_name_of("lora_unet", path)
         parts = dict(parts)
         parts.setdefault("alpha", _default_alpha(parts))
+        if hyper is not None:
+            return self._build_nara(linear, path, parts, hyper)
         dora_scale = parts.pop("dora_scale", None)
         sd = {f"{name}.{k}": v for k, v in parts.items()}
         lyco_type, params = get_module(sd, name)
@@ -384,6 +411,9 @@ class AdapterStack:
         lyco.requires_grad_(False)
         lyco.eval()
         return lyco
+
+    def _build_nara(self, linear: nn.Module, path: str, parts: dict, hyper):
+        return nara_build.build_nara(linear, path, parts, hyper, self.device)
 
     def _undo_comfy(self, linear, lyco, parts, override) -> None:
         """Invert the ComfyUI-semantics conversions of our own comfy exports."""
@@ -445,7 +475,10 @@ class AdapterStack:
         out = {}
         for key, value in raw.items():
             stem, _, name = key.partition(".")
-            out[f"{paths[stem]}.{name}"] = value
+            if stem == SHARED:
+                out[key] = value
+            else:
+                out[f"{paths[stem]}.{name}"] = value
         return out
 
     def remove(self) -> None:

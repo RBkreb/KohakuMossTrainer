@@ -41,9 +41,7 @@ def _comfy_dora_scale(t: Target, dora_scale: Tensor) -> Tensor:
 
 def comfy(t: Target) -> dict[str, Tensor]:
     """Tensors ComfyUI evaluates to this layer's dW at strength 1."""
-    if t.record.comfy_tensors is not None:
-        return t.record.comfy_tensors(t)
-    out = native(t)
+    out = t.record.comfy_tensors(t) if t.record.comfy_tensors is not None else native(t)
     if t.wd and "dora_scale" in out:
         out["dora_scale"] = _comfy_dora_scale(t, out["dora_scale"])
     return out

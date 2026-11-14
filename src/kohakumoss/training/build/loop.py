@@ -5,6 +5,7 @@ from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
+from kohakumoss.adapters.nara.context import set_context
 from kohakumoss.diffusion.objective import WEIGHTINGS, TokenNormalizer
 from kohakumoss.diffusion.timestep import TIMESTEPS
 from kohakumoss.inference.pipeline import MossPipeline
@@ -446,6 +447,7 @@ def build_callbacks(
             built.vae,
             memory_plan=built.plan,
             weight_stream=built.engines.weight_stream,
+            on_sigma=(set_context if built.trainable.needs_sigma else None),
         )
         cbs.append(
             SampleGrid(

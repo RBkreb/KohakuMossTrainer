@@ -16,6 +16,15 @@ from kohakumoss.types.plans import PrecisionConfig
 from kohakumoss_data import DataConfig, pipeline_problems
 
 THREADED_SCHEDULES = ("gpipe", "async")
+NARA_LAYOUT = (
+    "NARA (or ALGO='nara') trains one hypernetwork shared by every layer; sharded or "
+    "staged layouts cannot step it as a whole: use PARALLEL='ddp' or PARALLEL='none'"
+)
+
+
+def _nara_switch(k: dict) -> bool:
+    """The adapters are noise-conditioned: ALGO='nara' or the NARA switch."""
+    return k["ALGO"] == "nara" or bool(k.get("NARA"))
 
 
 def dist_backend(k: dict) -> str:
@@ -115,6 +124,8 @@ def fsdp_problems(k: dict) -> list[str]:
             "PARALLEL='fsdp': sampling runs on rank 0 only and cannot all-gather the "
             "sharded blocks; set SAMPLE_EVERY=0"
         )
+    if _nara_switch(k):
+        p.append(NARA_LAYOUT)
     return p
 
 
@@ -123,6 +134,8 @@ def pipeline_layout_problems(k: dict) -> list[str]:
     in-loop sampling."""
     p = _windows_problems(k) + _no_loop_sampling(k)
     p += schedule_problems(k["PIPELINE_SCHEDULE"], len(k["DEVICES"]), k["MICROBATCHES"])
+    if _nara_switch(k):
+        p.append(NARA_LAYOUT)
     return p + pipeline_problems(DataConfig.from_knobs(k))
 
 
@@ -134,6 +147,8 @@ def threaded_problems(k: dict) -> list[str]:
             f"PARALLEL='threaded' runs PIPELINE_SCHEDULE in {THREADED_SCHEDULES}, "
             f"got {k['PIPELINE_SCHEDULE']!r}"
         )
+    if _nara_switch(k):
+        p.append(NARA_LAYOUT)
     return p
 
 
@@ -239,8 +254,7 @@ def _pipeline_problems(k: dict) -> list[str]:
         )
         if not (window or (ints(trace) and len(trace) == 0)):
             p.append(
-                f"{name}={trace!r}: () or (first, last) with "
-                "1 <= first < last <= STEPS"
+                f"{name}={trace!r}: () or (first, last) with 1 <= first < last <= STEPS"
             )
     return p
 

@@ -38,6 +38,11 @@ class AdapterSet(Protocol):
 
     prewarm_stats: dict[str, int]
 
+    @property
+    def needs_sigma(self) -> bool:
+        """The trained adapters read the step's noise level (NaRA)."""
+        ...
+
     def trainable_params(self) -> Iterable[nn.Parameter]: ...
 
     def named_trainable(self) -> Iterable[tuple[str, nn.Parameter]]: ...

@@ -243,7 +243,7 @@ def output_row_scales(model: MossBackbone) -> dict[str, Tensor]:
 def fold_record(model: MossBackbone) -> dict | None:
     """The weight fold `model` carries as a JSON record (None when unfolded): per-block
     `scales`, `via`, the `pregate` (s_attn, s_ffn) and the norm `eps` mode."""
-    if model.fold_scales is None:
+    if getattr(model, "fold_scales", None) is None:
         return None
     return {
         "scales": [float(c) for c in model.fold_scales],

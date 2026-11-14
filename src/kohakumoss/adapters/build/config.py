@@ -5,7 +5,13 @@ from dataclasses import dataclass, field
 
 from lycoris.wrapper import LycorisNetwork
 
-from kohakumoss.adapters.kinds import BY_ALGO, lycoris_algo
+from kohakumoss.adapters.kinds import (
+    BY_ALGO,
+    lycoris_algo,
+    nara_network_algo,
+    nara_record_of,
+)
+from kohakumoss.adapters.nara.hyper import EMBEDS
 from kohakumoss.adapters.train.tlora import MASK_KEYS
 
 MODES = ("bypass", "merge")
@@ -28,14 +34,18 @@ def _parameters(fn) -> set[str]:
     return {n for n, p in sig.parameters.items() if p.kind not in kinds} - {"self"}
 
 
-def accepted_kwargs(algo: str) -> set[str]:
-    """ALGO_KWARGS names the LyCORIS module (or network) of `algo` takes."""
-    module = BY_ALGO[algo].module
+def accepted_kwargs_of(module: type) -> set[str]:
+    """ALGO_KWARGS names `module` (or the LyCORIS network) takes."""
     return (_parameters(module.__init__) | _parameters(LycorisNetwork.__init__)) - {
         "lora_name",
         "org_module",
         "module",
     }
+
+
+def accepted_kwargs(algo: str) -> set[str]:
+    """ALGO_KWARGS names the LyCORIS module (or network) of `algo` takes."""
+    return accepted_kwargs_of(BY_ALGO[algo].module)
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,7 @@ class AdapterConfig:
     dora: bool = False
     dora_on_output: bool = True
     dora_detach: bool = False
+    nara: bool = False
     dropout: float = 0.0
     rank_dropout: float = 0.0
     module_dropout: float = 0.0
@@ -68,18 +79,26 @@ class AdapterConfig:
 
     @property
     def lycoris_algo(self) -> str:
-        return lycoris_algo(self.algo)
+        return nara_network_algo(self.algo) if self.nara else lycoris_algo(self.algo)
 
     @property
     def record(self):
-        return BY_ALGO[self.algo]
+        """The kind record the configuration trains: the NARA switch swaps in the
+        algo's noise-conditioned variant."""
+        rec = BY_ALGO[self.algo]
+        return nara_record_of(rec) if self.nara else rec
 
     @property
     def has_step_state(self) -> bool:
-        """The adapters carry per-step state: T-LoRA masks, DyLoRA ranks or
-        module-dropout draws."""
+        """The adapters carry per-step state: T-LoRA masks, NaRA's noise level,
+        DyLoRA ranks or module-dropout draws."""
         rec = BY_ALGO.get(self.algo)
-        drawn = rec is not None and (rec.per_token_mask or rec.draw_step is not None)
+        drawn = rec is not None and (
+            rec.per_token_mask
+            or rec.needs_sigma
+            or self.nara
+            or rec.draw_step is not None
+        )
         return drawn or self.module_dropout > 0
 
     def mask_kwargs(self) -> dict:
@@ -104,6 +123,8 @@ class AdapterConfig:
             problems.append(f"DIM must be positive, got {self.dim}")
         if self.dora and self.dropout > 0:
             problems.append("DORA ignores input dropout; set DROPOUT['input']=0")
+        if self.nara and (rec is None or not rec.supports_nara):
+            problems.append(f"NARA does not apply to ALGO={self.algo!r}")
         for name in ("dropout", "rank_dropout", "module_dropout"):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
@@ -121,11 +142,35 @@ class AdapterConfig:
                 "ALGO='tlora' masks ranks per token, which no merged weight expresses; "
                 "use ADAPTER_MODE='bypass'"
             )
+        if rec.needs_sigma or self.nara:
+            out += self._sigma_problems(rec)
+        if self.nara and nara_record_of(rec) is None:
+            # The switch itself is rejected above; there is no variant module to
+            # check the kwargs against.
+            return out
         return out + self._kwarg_problems()
+
+    def _sigma_problems(self, rec) -> list[str]:
+        """A noise-conditioned delta: bypass only, no rank dropout, no extra factors."""
+        out = []
+        if self.mode == "merge":
+            out.append(
+                f"ALGO={self.algo!r} conditions its delta on the noise level, which no "
+                "merged weight expresses; use ADAPTER_MODE='bypass'"
+            )
+        if self.rank_dropout > 0:
+            out.append(f"ALGO={self.algo!r} does not support rank dropout")
+        for key in ("use_tucker", "use_scalar", "rs_lora"):
+            if self.algo_kwargs.get(key):
+                out.append(f"ALGO={self.algo!r} does not take ALGO_KWARGS[{key!r}]")
+        embed = self.algo_kwargs.get("nara_embed", "fourier")
+        if embed not in EMBEDS:
+            out.append(f"ALGO_KWARGS['nara_embed']={embed!r} not in {EMBEDS}")
+        return out
 
     def _kwarg_problems(self) -> list[str]:
         own = set(MASK_KEYS) if self.record.per_token_mask else set()
-        accepted = accepted_kwargs(self.algo)
+        accepted = accepted_kwargs_of(self.record.module)
         out = []
         for key in self.algo_kwargs:
             if key in own:
@@ -163,6 +208,7 @@ def config_from_knobs(cfg: dict) -> AdapterConfig:
         dora=bool(cfg.get("DORA", False)),
         dora_on_output=bool(algo_kwargs.pop("wd_on_out", True)),
         dora_detach=bool(cfg.get("DORA_DETACH", False)),
+        nara=bool(cfg.get("NARA", False)),
         dropout=float(dropout.get("input", 0.0)),
         rank_dropout=float(dropout.get("rank", 0.0)),
         module_dropout=float(dropout.get("module", 0.0)),

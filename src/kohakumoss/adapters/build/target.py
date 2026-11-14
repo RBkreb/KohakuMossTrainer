@@ -19,6 +19,7 @@ from kohakumoss.adapters.kinds.common import delta_builder
 from kohakumoss_common.weak import weak_method
 
 CHILD = "lyco"
+SHARED = "nara_hyper"
 
 
 def is_stored(linear: nn.Module) -> bool:

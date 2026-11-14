@@ -28,6 +28,8 @@ LyCORIS algorithm:
 | `bypass_exact_at(m)` | the module's bypass is exact at `m` (OFT: only at 1) |
 | `loraplus_tensors` | the zero-initialised factors that LoRA+ boosts |
 | `per_token_mask` | per-token rank masks (T-LoRA): bypass only, a mask group per axis |
+| `needs_sigma` | the kind reads the step's noise-level context (NaRA): bypass only |
+| `shared_module(config)` | one module built per adapter set and shared by its layers (NaRA's hypernetwork), or None |
 | `draw_step(t, gen)` | the per-step random draw (DyLoRA's rank prefix) |
 | `supports_dora`, `rankless`, `training_dependent` | DoRA allowed, needs no `DIM`, forward re-binds on train / eval |
 
@@ -41,6 +43,7 @@ A uniform row scale c of dW is written by multiplying one factor of each additiv
 | LoHa | `hada_w1_a` |
 | LoKr | `lokr_w1` (or `lokr_w1_a`) |
 | T-LoRA | `lambda_layer` and `base_lambda` |
+| NaRA | `lora_up` (the core is shared, not a per-layer term) |
 | GLoRA | `b1` alone (its W*a1*a2 term scales with the base) |
 
 Rotations and IA3 commute with a uniform scale of their base. A per-row scale, or a set

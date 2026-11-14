@@ -17,9 +17,19 @@ PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
 def _reimport(monkeypatch):
+    from lycoris.wrapper import network_module_dict
+
+    # The fresh import re-registers the kinds' LyCORIS modules into the wrapper's
+    # dict, which the module deletion below does not cover; put the original
+    # registrations back so the restored modules stay mutually consistent.
+    saved = dict(network_module_dict)
     for name in [n for n in sys.modules if n.startswith("kohakumoss.adapters")]:
         monkeypatch.delitem(sys.modules, name)
-    return importlib.import_module("kohakumoss.adapters")
+    try:
+        return importlib.import_module("kohakumoss.adapters")
+    finally:
+        network_module_dict.clear()
+        network_module_dict.update(saved)
 
 
 def _imports_cleanly(monkeypatch):

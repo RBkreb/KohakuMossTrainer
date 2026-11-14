@@ -73,18 +73,23 @@ def layout(hw: Tensor, text_len: Tensor, device) -> SeqInfo:
         return build_seqinfo(hw, text_len).to(device)
 
 
-def _single(backbone, hw, positive, negative, cfg, skip, device) -> Callable:
+def _single(
+    backbone, hw, positive, negative, cfg, skip, device, notify=nothing
+) -> Callable:
     text, lens = _cat(positive, device)
     seq = layout(hw, lens, device)
     forward = backbone.bind_forward()
 
     def velocity(x, s):
+        notify(s, seq)
         return forward(x, text, s, seq).float()
 
     return velocity
 
 
-def _two_pass(backbone, hw, positive, negative, cfg, skip, device) -> Callable:
+def _two_pass(
+    backbone, hw, positive, negative, cfg, skip, device, notify=nothing
+) -> Callable:
     pos_text, pos_len = _cat(positive, device)
     neg_text, neg_len = _cat(negative, device)
     pos_seq = layout(hw, pos_len, device)
@@ -92,14 +97,18 @@ def _two_pass(backbone, hw, positive, negative, cfg, skip, device) -> Callable:
     cond, uncond = backbone.bind_forward(), backbone.bind_forward(skip)
 
     def velocity(x, s):
+        notify(s, pos_seq)
         v = cond(x, pos_text, s, pos_seq).float()
+        notify(s, neg_seq)
         u = uncond(x, neg_text, s, neg_seq).float()
         return u + cfg * (v - u)
 
     return velocity
 
 
-def _packed(backbone, hw, positive, negative, cfg, skip, device) -> Callable:
+def _packed(
+    backbone, hw, positive, negative, cfg, skip, device, notify=nothing
+) -> Callable:
     b = hw.shape[0]
     pos_text, pos_len = _cat(positive, device)
     neg_text, neg_len = _cat(negative, device)
@@ -113,7 +122,9 @@ def _packed(backbone, hw, positive, negative, cfg, skip, device) -> Callable:
 
     def velocity(x, s):
         n = x.shape[0]
-        out = forward(torch.cat((x, x)), text, torch.cat((s, s)), seq, uncond).float()
+        s2 = torch.cat((s, s))
+        notify(s2, seq)
+        out = forward(torch.cat((x, x)), text, s2, seq, uncond).float()
         v, u = out[:n], out[n:]
         return u + cfg * (v - u)
 
@@ -141,11 +152,13 @@ def sample_latents(
     cfg_mode: str = "packed",
     callback: Callable[[int, Tensor], None] | None = None,
     noise: Tensor | None = None,
+    on_sigma: Callable[[Tensor, SeqInfo], None] | None = None,
 ) -> SampleResult:
     """Positive / negative: per-sample unpadded embeddings [L_i, text_dim]; `cfg == 1`
     runs the positive branch only. `skip_layers=None` uses the config's negative skip;
     indices outside [0, depth) raise. `noise`: packed fp32 [N_img, C] start state; None
-    draws it from `seeds`."""
+    draws it from `seeds`. `on_sigma(sigma, seq)` runs before every backbone forward
+    (noise-conditioned adapters read it)."""
     b = len(positive)
     if len(seeds) != b:
         raise ValueError("one seed per sample")
@@ -158,7 +171,9 @@ def sample_latents(
         raise ValueError(f"skip layers {outside} outside the {depth} blocks")
     skip = frozenset(skip_layers)
     build = _single if cfg == 1.0 else CFG_MODES[cfg_mode]
-    velocity = build(backbone, hw, positive, negative, cfg, skip, device)
+    velocity = build(
+        backbone, hw, positive, negative, cfg, skip, device, on_sigma or nothing
+    )
     report = callback or nothing
     if noise is None:
         x = initial_noise(seeds, hw, backbone.cfg.latent_channels, device)

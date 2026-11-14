@@ -82,11 +82,15 @@ def svd_init(lyco: TLoraModule, w: torch.Tensor) -> None:
 
 
 def _target(path: str, lyco: nn.Module, linear: nn.Module) -> Target:
-    """A Target; T-LoRA modules read the mask group of their token axis."""
+    """A Target; T-LoRA modules read the mask group of their token axis, NaRA modules
+    the noise-level rows of theirs."""
     t = Target(path=path, lora_name=lyco.lora_name, linear=linear, lyco=lyco)
     if t.record.per_token_mask:
         t.axis = axis_of(path)
         lyco.mask_group_id = AXES[t.axis]
+    elif t.record.needs_sigma:
+        t.axis = axis_of(path)
+        lyco.nara_axis = t.axis
     return t
 
 

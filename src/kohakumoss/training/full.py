@@ -84,6 +84,10 @@ class FullTrainable:
             self.model, path, dtype=self.dtype, fused_qkv=fused_qkv, metadata=metadata
         )
 
+    @property
+    def needs_sigma(self) -> bool:
+        return False
+
     def begin_step(self, sigma: Tensor, seq, step: int) -> None:
         return None
 

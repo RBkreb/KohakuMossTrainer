@@ -15,6 +15,7 @@ The adapter knobs of `scripts/train/moss.py`:
 | `DIM`, `ALPHA` | 32, 32.0 | rank (OFT: block size bound) and alpha |
 | `ALGO_KWARGS` | `{}` | extra LyCORIS module arguments, e.g. `{"factor": 8}` for LoKr |
 | `DORA`, `DORA_DETACH` | False, False | weight-decompose; detach the DoRA weight norm in training (no fused DoRA kernel then) |
+| `NARA` | False | the NARA switch: condition the lora / loha / lokr delta on the noise level ([NaRA](../internals/adapter-nara.md)) |
 | `DROPOUT` | `{"input": 0.0, "rank": 0.0, "module": 0.0}` | the three dropouts |
 | `ADAPTER_MODE` | `bypass` | `bypass` (adapter path added to the base output) or `merge` (one GEMM on W + dW) |
 | `LORAPLUS_RATIO` | 1.0 (off) | LoRA+ lr ratio of the zero-initialised factors ([Optimiser groups](#optimiser-groups)) |
@@ -25,15 +26,16 @@ The adapter knobs of `scripts/train/moss.py`:
 
 | `ALGO` | LyCORIS module | notes |
 | --- | --- | --- |
-| `lora`, `locon` | `LoConModule` | `DORA=True` adds the weight-decompose epilogue |
-| `loha` | `LohaModule` | DoRA available |
-| `lokr` | `LokrModule` | `factor`, `decompose_both`, `full_matrix` via `ALGO_KWARGS`; DoRA available |
+| `lora`, `locon` | `LoConModule` | `DORA=True` adds the weight-decompose epilogue; `NARA=True` is ALGO=`nara` |
+| `loha` | `LohaModule` | DoRA and the NARA switch available |
+| `lokr` | `LokrModule` | `factor`, `decompose_both`, `full_matrix` via `ALGO_KWARGS`; DoRA and the NARA switch available (the core needs a factorized w2) |
 | `oft` | `DiagOFTModule` | `DIM` is the block size bound; `constraint`, `rescaled` |
 | `boft` | `ButterflyOFTModule` | needs a power-of-two factorisation of each output width |
 | `glora` | `GLoRAModule` | dW = W*a1*a2 + b1*b2 |
 | `ia3` | `IA3Module` | `train_on_input` |
 | `dylora` | `DyLoraModule` | a rank prefix drawn per step while training, every rank in eval |
 | `tlora` | `TLoraModule` | per-token rank masks set each step; `ADAPTER_MODE="bypass"` only |
+| `nara` | `NaRAModule` | noise-conditioned core from one shared hypernetwork; `ADAPTER_MODE="bypass"` only ([adapter-nara.md](../internals/adapter-nara.md)) |
 
 `ALGO="full"` is the full finetune ([full-finetune.md](../guides/full-finetune.md)): the
 backbone's own weights train and no LyCORIS module is built.
@@ -44,6 +46,10 @@ backbone's own weights train and no LyCORIS module is built.
 - **T-LoRA's mask** takes `mask_min_rank`, `mask_alpha` and `mask_max_timestep`
   (LyCORIS's `compute_timestep_mask` with t = sigma * max_timestep); these never reach
   the module.
+- **NaRA** takes `nara_hidden1`, `nara_hidden2`, `nara_embed_dim`, `nara_embed`
+  (`fourier` / `mlp` / `raw`), `nara_fourier_scale`, `nara_c_scale` (the shared
+  hypernetwork) and `export_sigma` (the fixed noise level of its ComfyUI / merged
+  exports); it rejects rank dropout and DoRA.
 - **DoRA** rejects input dropout (LyCORIS ignores it).
 - **`TRAIN_NORMS=True`** adds a trained delta to the norms the preset covers
   (`adapters.train.norms.NormDelta`, a parametrization: `weight = original + m *
@@ -135,7 +141,8 @@ strength one rule (`diff`-written layers, merges and the DoRA kernels all comput
   (`docs/guides/export-to-comfy.md#fused-qkv`).
 - **Evaluation mode.** Every export and `merge_into` evaluates the adapters outside
   training (no rank dropout, every DyLoRA block, no T-LoRA mask) and leaves the training
-  state as it was.
+  state as it was. NaRA's dW exports (comfy / merged / `merge_into`) evaluate its core
+  at the fixed `export_sigma`; the native format keeps the hypernetwork instead.
 - **`merge_into(m)`** bakes every linear and norm delta at `m`.
 
 ## Inference
@@ -236,6 +243,10 @@ microbatch, validation included) and `end_step()` after the step's last backward
   image token, modulation layers a row per sample (`adapters.train.tlora.AXES`, set per
   layer from its path). `end_step` clears them, so sampling and exports see the
   full-rank adapter, which is what the exported files hold.
+- **NaRA's noise level:** the step's `(sigma, seq)` is installed for the layers to
+  read (`adapters.nara.context`), captured and restored with the masks for pipeline
+  micro-batches, and cleared by `end_step`. Sampling installs it through
+  `sample_latents`'s `on_sigma` hook; a NaRA forward without it raises.
 - **Random draws:** each layer's DyLoRA rank prefix and module-dropout skip come from a
   generator seeded by (`SEED`, step, microbatch index), drawn once outside the forward:
   a checkpoint recompute replays them, every data-parallel rank draws the same ones,

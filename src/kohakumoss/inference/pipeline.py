@@ -13,6 +13,7 @@ from PIL import Image
 from torch import Tensor
 
 from kohakumoss.adapters.lycoris.tuning import set_lycoris_tuning
+from kohakumoss.adapters.nara.context import set_context
 from kohakumoss.diffusion.sampling import sample_latents, unpack
 from kohakumoss.diffusion.sampling.schedule import moss_sigmas
 from kohakumoss.inference import peaks
@@ -153,6 +154,7 @@ class MossPipeline:
         self._linalg = cusolver_linalg if cusolver else nullcontext
         self.memory_plan = MemoryPlan()
         self.weight_stream = None
+        self.on_sigma = None
 
     @classmethod
     def from_components(
@@ -163,14 +165,17 @@ class MossPipeline:
         device=None,
         memory_plan: MemoryPlan | None = None,
         weight_stream=None,
+        on_sigma: Callable | None = None,
     ) -> "MossPipeline":
         """Share already-built modules (the training model under its `memory_plan` and
         `weight_stream`, its placed VAE): no reload, no_grad only, TUNE left to the
-        trainer (it owns the kernels)."""
+        trainer (it owns the kernels). `on_sigma(sigma, seq)` runs before every
+        sampling forward (the trainer's noise-conditioned adapters read it)."""
         device = device or next(backbone.parameters()).device
         pipe = cls(backbone, text_encoder, vae, device, owned=False)
         pipe.memory_plan = memory_plan or MemoryPlan()
         pipe.weight_stream = weight_stream
+        pipe.on_sigma = on_sigma
         return pipe
 
     @classmethod
@@ -490,6 +495,8 @@ class MossPipeline:
                 self.device,
                 cfg_mode,
                 partial(_step_report, pbar, sigmas, step_callback, clock),
+                on_sigma=self.on_sigma
+                or (set_context if any(s.needs_sigma for s in self.adapters) else None),
             )
         return res, {"rows": clock.rows, **clock.summary()}
 

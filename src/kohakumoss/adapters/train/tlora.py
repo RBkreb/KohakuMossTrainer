@@ -72,7 +72,8 @@ def token_mask(
     return per_sample.index_select(0, seg.long())
 
 
-def _rows(seq, axis: str, batch: int, device) -> Tensor:
+def rows_of(seq, axis: str, batch: int, device) -> Tensor:
+    """The token -> sample index of one axis's rows (the sample axis: one per sample)."""
     match axis:
         case "joint":
             return seq.seg_joint
@@ -88,7 +89,7 @@ def set_masks(axes: tuple[str, ...], max_rank: int, kwargs: dict, sigma, seq) ->
     """Install this step's mask for every axis group in `axes`."""
     per_sample = rank_mask(sigma, max_rank, **kwargs)
     for axis in axes:
-        rows = _rows(seq, axis, per_sample.shape[0], per_sample.device)
+        rows = rows_of(seq, axis, per_sample.shape[0], per_sample.device)
         set_timestep_mask(per_sample.index_select(0, rows.long()), AXES[axis])
 
 

@@ -5,7 +5,7 @@ from torch import nn
 
 from kohakumoss.adapters.build.config import AdapterConfig
 from kohakumoss.adapters.build.network import build_targets
-from kohakumoss.adapters.build.target import CHILD, Target, base_kind
+from kohakumoss.adapters.build.target import CHILD, SHARED, Target, base_kind
 from kohakumoss.adapters.lycoris.backend import pick_backend
 from kohakumoss.adapters.train.adapter_set import LycoAdapterSet
 from kohakumoss.logging.log import get_logger
@@ -43,6 +43,23 @@ def note_bypassed(config: AdapterConfig, targets: list[Target]) -> None:
     )
 
 
+def _place_shared(
+    model: nn.Module, config: AdapterConfig, dtype: torch.dtype, device: torch.device
+) -> nn.Module | None:
+    """The kind's one shared module (NaRA's hypernetwork) under the model root, where
+    DDP and the offload walkers see it; the adapter set owns its state."""
+    rec = config.record
+    if rec.shared_module is None:
+        return None
+    if SHARED in model._modules:
+        raise RuntimeError(f"model already carries a shared {rec.name} module")
+    shared = rec.shared_module(config)
+    shared.to(device=device, dtype=dtype)
+    shared.train(model.training)
+    model.add_module(SHARED, shared)
+    return shared
+
+
 def apply(
     model: nn.Module,
     config: AdapterConfig,
@@ -61,4 +78,5 @@ def apply(
     note_bypassed(config, targets)
     for t in targets:
         _place(t, dtype, device)
-    return LycoAdapterSet(model, config, targets, norms, backend)
+    shared = _place_shared(model, config, dtype, device)
+    return LycoAdapterSet(model, config, targets, norms, backend, shared)

@@ -18,4 +18,5 @@ does on the device. Start from the [concepts](../concepts/README.md) and
 | encode feed | [encode-feed.md](encode-feed.md) | ENCODE_DEVICES: encoder processes on their own cards, fed by the main process, streaming ready batches to the training processes |
 | adapters | [adapter-kinds.md](adapter-kinds.md) | the per-algorithm adapter records |
 | | [adapter-binding.md](adapter-binding.md) | bound adapter forwards, kernel ops, autotuned ops, forward wrappers |
+| | [adapter-nara.md](adapter-nara.md) | NaRA: the shared noise-conditioned hypernetwork, its context, state and exports |
 | multi-GPU | [distributed-launch.md](distributed-launch.md) | process launch, store and backends (multi-GPU training is Linux-only; the CPU gloo self-checks also run on Windows) |

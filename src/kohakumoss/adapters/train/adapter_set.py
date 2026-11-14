@@ -12,7 +12,7 @@ from torch import Tensor, nn
 
 from kohakumoss.adapters.bind.select import bind_target, training_dependent
 from kohakumoss.adapters.build.config import AdapterConfig
-from kohakumoss.adapters.build.target import CHILD, NormTarget, Target
+from kohakumoss.adapters.build.target import CHILD, SHARED, NormTarget, Target
 from kohakumoss.adapters.export import convert, files
 from kohakumoss.adapters.export.fused import (
     fused_diff,
@@ -152,15 +152,20 @@ class LycoAdapterSet:
         targets: list[Target],
         norms: list[NormTarget],
         backend: str,
+        shared: nn.Module | None = None,
     ):
         self.model = model
         self.config = config
         self.targets = targets
         self.norms = norms
         self.backend = backend
+        self.shared = shared
         self.multiplier = config.multiplier
         self.steps = StepPlan(targets, config)
         self.prewarm_stats: dict[str, int] = {}
+        if shared is not None:
+            for t in targets:
+                t.lyco.set_shared(shared)
         self.bind()
 
     def bind(self) -> None:
@@ -185,13 +190,19 @@ class LycoAdapterSet:
         self.multiplier = float(multiplier)
         self.bind()
 
+    @property
+    def needs_sigma(self) -> bool:
+        """The adapters read the step's noise level (NaRA): sampling must install it."""
+        return self.steps.noised
+
     def begin_step(self, sigma: Tensor, seq, step: int) -> None:
-        """Before a training / validation forward: T-LoRA masks and this microbatch's
-        DyLoRA / module-dropout draws."""
+        """Before a training / validation forward: T-LoRA masks, NaRA's noise level
+        and this microbatch's DyLoRA / module-dropout draws."""
         self.steps.begin(sigma, seq, step)
 
     def end_step(self) -> None:
-        """After the step's last backward: masks cleared (full-rank adapters)."""
+        """After the step's last backward: masks cleared (full-rank adapters), the
+        noise level unset."""
         self.steps.end()
 
     def step_state(self):
@@ -259,6 +270,10 @@ class LycoAdapterSet:
             for name, p in self._norm_params(n):
                 if p.requires_grad:
                     yield f"{n.lora_name}.{name}", name, p, ()
+        if self.shared is not None:
+            for name, p in self.shared.named_parameters():
+                if p.requires_grad:
+                    yield f"{SHARED}.{name}", name, p, ()
 
     def param_groups(
         self,
@@ -287,6 +302,9 @@ class LycoAdapterSet:
         for n in self.norms:
             for name, v in self._norm_params(n):
                 live[f"{n.lora_name}.{name}"] = v
+        if self.shared is not None:
+            for name, v in nn.Module.state_dict(self.shared, keep_vars=True).items():
+                live[f"{SHARED}.{name}"] = v
         return live
 
     def load_state_dict(self, state: dict[str, Tensor]) -> None:
@@ -349,6 +367,13 @@ class LycoAdapterSet:
                 )
                 out.update(
                     {f"{stem}.{k}": v for k, v in convert.norm_native(n).items()}
+                )
+            if self.shared is not None and fmt == "lycoris":
+                out.update(
+                    {
+                        f"{SHARED}.{k}": v.detach()
+                        for k, v in self.shared.state_dict().items()
+                    }
                 )
         return out
 
@@ -477,6 +502,7 @@ class LycoAdapterSet:
                 if n.bias_delta is not None:
                     norm_delta.detach(n.module, True, "bias")
         self.targets, self.norms = [], []
+        self._drop_shared()
         rebind_owner(self.model)
 
     def remove(self) -> None:
@@ -488,7 +514,15 @@ class LycoAdapterSet:
             if n.bias_delta is not None:
                 norm_delta.detach(n.module, False, "bias")
         self.targets, self.norms = [], []
+        self._drop_shared()
         rebind_owner(self.model)
+
+    def _drop_shared(self) -> None:
+        """Detach the shared module from the model root (the set owned its state)."""
+        if self.shared is not None:
+            if SHARED in self.model._modules:
+                del self.model._modules[SHARED]
+            self.shared = None
 
     @staticmethod
     def _detach(t: Target) -> None:

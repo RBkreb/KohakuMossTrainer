@@ -115,6 +115,11 @@ them), so a config edits them in place:
   to LyCORIS's `dropout`, `rank_dropout` and `module_dropout` (those names are not
   accepted in ALGO_KWARGS).
 - DoRA is `DORA = True` (LyCORIS `weight_decompose`).
+- The NARA switch is `NARA = True`: the delta is conditioned on the step's noise level
+  through one shared hypernetwork (`ALGO = "lora"` / `"locon"` then trains exactly
+  ALGO=`nara`; `loha` and `lokr` run their noise-conditioned variants). It composes
+  with `DORA`, runs in bypass mode only, and takes the `nara_*` ALGO_KWARGS of
+  [adapter-nara.md](../internals/adapter-nara.md).
 
 ### Choosing a VRAM layer
 

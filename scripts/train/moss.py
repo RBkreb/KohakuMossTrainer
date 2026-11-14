@@ -87,7 +87,7 @@ DATA_BALANCE = False  # deal each step's batches to ranks by estimated cost (mul
 SEED = 0
 
 # ===================== ADAPTER =====================
-ALGO = "lora"  # "lora" | "locon" | "loha" | "lokr" | "oft" | "boft" | "glora" | "ia3" | "dylora" | "tlora" | "full"
+ALGO = "lora"  # "lora" | "locon" | "loha" | "lokr" | "oft" | "boft" | "glora" | "ia3" | "dylora" | "tlora" | "nara" | "full"
 PRESET = "attn-mlp"  # base "attn" | "attn-mlp" | "full-block" | "all", + modifiers "+text-refiner" "+modulation" "+embed"; or a LyCORIS-style toml path
 DIM = 32
 ALPHA = 32.0
@@ -96,6 +96,7 @@ ALGO_KWARGS = (
 )  # e.g. {"factor": 8} for lokr, {"constraint": 0.0} for oft (DIM is the OFT block size)
 DORA = False
 DORA_DETACH = False  # True detaches the DoRA weight norm in training (the DoRA layers then run LyCORIS's unfused path)
+NARA = False  # True conditions the lora / loha / lokr delta on the noise level (the NARA switch; see docs/internals/adapter-nara.md)
 DROPOUT = {"input": 0.0, "rank": 0.0, "module": 0.0}
 ADAPTER_MODE = "bypass"  # "bypass" | "merge"
 LORAPLUS_RATIO = 1.0  # lr ratio of up / down factors (LoRA+); 1.0 = off
