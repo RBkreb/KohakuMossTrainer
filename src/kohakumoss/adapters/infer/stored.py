@@ -1,7 +1,8 @@
 """Inference adapters on a quantized / streamed / fp8-compute base: LyCORIS modules
 built from a file without reading the base weight, and bypass forwards that add each
 adapter's delta to the base's own output. No dense weight and no dense dW is held; a
-DoRA ratio is computed once from one transient copy of the layer's effective weight.
+fixed delta's DoRA ratio is computed once from one transient copy of the layer's
+effective weight, a NaRA delta's ratio every forward.
 See docs/internals/adapter-binding.md#quantized-and-streamed-bases.
 """
 
@@ -191,3 +192,40 @@ def wire_dora(prev, lyco, m: float, ratio: Tensor, s: Tensor | None, bias):
         case (False, True):
             return partial(dora_out_folded, prev, lyco, m, ratio, s)
     return partial(dora_out_folded_less_bias, prev, lyco, m, ratio, s, bias)
+
+
+def dora_nara_out(prev, lyco, m: float, base_fn, s: Tensor | None, bias, x):
+    """Output-axis DoRA whose ratio is recomputed from the live cores every
+    forward: y + m ((r - 1) Wx + r dy), fp32, `base_fn` the effective weight."""
+    r, rows = lyco.dora_ratio(base_fn(), False)
+    y = prev(x)
+    wx = y if bias is None else y - bias.to(y.dtype)
+    dy = lyco.bypass_forward_diff(x, 1.0).to(y.dtype)
+    if s is not None:
+        dy = dy * s.to(y.dtype)
+    r = r.index_select(0, rows.long()).to(y.device)
+    yf = y.float()
+    return (yf + m * ((r - 1) * wx.float() + r * dy.float())).to(y.dtype)
+
+
+def dora_nara_in(prev, lyco, m: float, base_fn, s: Tensor | None, x):
+    """Input-axis DoRA on the live cores: y + m (prev(c x) + dy(c x) - y), c the
+    per-sample column ratio, fp32, recomputed every forward."""
+    c, rows = lyco.dora_ratio(base_fn(), False)
+    c = c.index_select(0, rows.long()).to(x.device)
+    xc = (x.float() * c).to(x.dtype)
+    y = prev(x)
+    dy = lyco.bypass_forward_diff(xc, 1.0).to(y.dtype)
+    if s is not None:
+        dy = dy * s.to(y.dtype)
+    yc = prev(xc) + dy
+    yf = y.float()
+    return (yf + m * (yc.float() - yf)).to(y.dtype)
+
+
+def wire_dora_nara(prev, lyco, m: float, base_fn, s: Tensor | None, bias):
+    """The DoRA chain of a noise-conditioned module: no load-time ratio, the
+    magnitude follows the step's sigma (the static-BA cache is bypassed)."""
+    if not lyco.wd_on_out:
+        return partial(dora_nara_in, prev, lyco, m, base_fn, s)
+    return partial(dora_nara_out, prev, lyco, m, base_fn, s, bias)

@@ -95,3 +95,40 @@ def bypass_in(layer, base_fn, unit_fn, lyco, m: float, detach: bool, x):
     y = lin._impl(lin, x)
     yc = lin._impl(lin, xc) + lyco.bypass_forward_diff(xc, 1.0).to(y.dtype)
     return y + m * (yc - y)
+
+
+def _nara_out(y, wx, r, rows, lyco, m: float, x):
+    dy = lyco.bypass_forward_diff(x, 1.0)
+    r = r.index_select(0, rows.long()).to(y.device)
+    yf = y.float()
+    return (yf + m * ((r - 1) * wx.float() + r * dy.float())).to(y.dtype)
+
+
+def nara_out(layer, base_fn, lyco, m: float, detach: bool, x):
+    """Output-axis DoRA on the live NaRA delta: y + m ((r - 1) Wx + r dy) with
+    r = mag / ||W + dW(sigma)|| per sample, fp32, recomputed every forward."""
+    r, rows = lyco.dora_ratio(base_fn(F32), detach)
+    lin = layer()
+    y = lin._impl(lin, x)
+    return _nara_out(y, y, r, rows, lyco, m, x)
+
+
+def nara_out_biased(layer, base_fn, lyco, m: float, detach: bool, x):
+    """`nara_out` on a layer with a bias b: y + m ((r - 1)(Wx) + r dy), Wx = y - b."""
+    r, rows = lyco.dora_ratio(base_fn(F32), detach)
+    lin = layer()
+    y = lin._impl(lin, x)
+    return _nara_out(y, y - lin.bias.to(y.dtype), r, rows, lyco, m, x)
+
+
+def nara_in(layer, base_fn, lyco, m: float, detach: bool, x):
+    """Input-axis DoRA on the live NaRA delta: W'x = (W + dW)(c x) with
+    c = mag / ||W + dW(sigma)|| per sample column, fp32, recomputed every forward."""
+    c, rows = lyco.dora_ratio(base_fn(F32), detach)
+    c = c.index_select(0, rows.long()).to(x.device)
+    xc = (x.float() * c).to(x.dtype)
+    lin = layer()
+    y = lin._impl(lin, x)
+    yc = lin._impl(lin, xc) + lyco.bypass_forward_diff(xc, 1.0).to(y.dtype)
+    yf = y.float()
+    return (yf + m * (yc.float() - yf)).to(y.dtype)

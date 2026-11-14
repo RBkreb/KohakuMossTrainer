@@ -296,6 +296,128 @@ def test_comfy_export_is_fixed_sigma_lora():
     must_fail(matches_plain, "the core vanished from the export")
 
 
+@pytest.mark.parametrize("wd_on_out", [True, False])
+def test_dora_bypass_matches_dynamic_norm(wd_on_out):
+    """DoRA normalizes after the live BA*C(sigma): the magnitude ratio is the
+    per-sample ||W + dW(sigma)|| in fp32, not the fixed export-sigma one."""
+    w, b, x = problem()
+    sigma, seq = layout()
+    m = 0.7
+    aset = adapted(
+        dense_linear(w, b),
+        dora=True,
+        multiplier=m,
+        dora_on_output=wd_on_out,
+    )
+    perturb(aset)
+    lyco = aset.targets[0].lyco
+    rows = seq.seg_joint.long()
+    set_context(sigma, seq)
+    xin = x.clone().requires_grad_(True)
+    y = aset.targets[0].linear(xin)
+
+    with torch.no_grad():
+        cores = ref_hyper(aset.shared, sigma, torch.float64)
+        ref = torch.zeros_like(x.double())
+        for sample in range(cores.shape[0]):
+            sel = rows == sample
+            core = cores[sample]
+            dw = (
+                lyco.lora_up.weight.double() @ core.T @ lyco.lora_down.weight.double()
+            ) * float(lyco.scale)
+            merged = w.double() + dw
+            if wd_on_out:
+                s = lyco.dora_scale.double().reshape(-1) / (
+                    merged.norm(dim=1) + torch.finfo(torch.float64).eps
+                )
+                wx = F.linear(x[sel].double(), w.double())
+                ref[sel] = (
+                    (1 - m) * wx
+                    + m * s.reshape(1, -1) * (wx + F.linear(x[sel].double(), dw))
+                    + b.double()
+                )
+            else:
+                c = lyco.dora_scale.double().reshape(-1) / (
+                    merged.norm(dim=0) + torch.finfo(torch.float64).eps
+                )
+                scaled = merged * c.reshape(1, -1)
+                ref[sel] = F.linear(
+                    x[sel].double(), w.double() + m * (scaled - w.double()), b.double()
+                )
+    assert torch.allclose(y.double(), ref, atol=2e-5, rtol=2e-5), (y - ref).abs().max()
+
+    y.pow(2).sum().backward()
+    assert lyco.dora_scale.grad is not None
+    assert lyco.dora_scale.grad.abs().sum() > 0
+    assert aset.shared.mapper[0].weight.grad.abs().sum() > 0
+
+    def static_magnitude():
+        """The fixed export-sigma norm no longer matches the forward."""
+        with torch.no_grad():
+            core = ref_hyper(
+                aset.shared, torch.tensor([lyco.export_sigma]), torch.float64
+            )[0]
+            dw = (
+                lyco.lora_up.weight.double() @ core.T @ lyco.lora_down.weight.double()
+            ) * float(lyco.scale)
+            merged = w.double() + dw
+            dim = 1 if wd_on_out else 0
+            s = lyco.dora_scale.double().reshape(-1) / (
+                merged.norm(dim=dim) + torch.finfo(torch.float64).eps
+            )
+            static = torch.zeros_like(x.double())
+            for sample in range(cores.shape[0]):
+                sel = rows == sample
+                cs = cores[sample]
+                dws = (
+                    lyco.lora_up.weight.double() @ cs.T @ lyco.lora_down.weight.double()
+                ) * float(lyco.scale)
+                if wd_on_out:
+                    wx = F.linear(x[sel].double(), w.double())
+                    static[sel] = (
+                        (1 - m) * wx
+                        + m * s.reshape(1, -1) * (wx + F.linear(x[sel].double(), dws))
+                        + b.double()
+                    )
+                else:
+                    scaled = (w.double() + dws) * s.reshape(1, -1)
+                    static[sel] = F.linear(
+                        x[sel].double(),
+                        w.double() + m * (scaled - w.double()),
+                        b.double(),
+                    )
+        assert torch.allclose(y.double(), static, atol=2e-5, rtol=2e-5)
+
+    must_fail(static_magnitude, "the magnitude ignored the live core")
+
+
+@pytest.mark.parametrize("fmt", ["lycoris", "raw"])
+def test_dora_export_roundtrip(tmp_path, fmt):
+    w, b, x = problem()
+    sigma, seq = layout()
+    aset = adapted(dense_linear(w, b), dora=True)
+    perturb(aset)
+    set_context(sigma, seq)
+    trained = aset.targets[0].linear(x).detach()
+
+    path = str(tmp_path / "nara-dora.safetensors")
+    if fmt == "lycoris":
+        aset.export(path, "lycoris", dtype=None)
+    else:
+        aset.save_state(path)
+
+    twin = dense_linear(w, b)
+    stack = AdapterStack(holder(twin), mode="bypass", device="cpu")
+    stack.add(path)
+    assert stack.needs_sigma
+    set_context(sigma, seq)
+    loaded = twin(x)
+    assert torch.allclose(loaded, trained, atol=2e-5, rtol=2e-5), (
+        (loaded - trained).abs().max()
+    )
+    stack.remove()
+
+
 @pytest.mark.parametrize(
     "kw",
     [
@@ -303,7 +425,6 @@ def test_comfy_export_is_fixed_sigma_lora():
         {"rank_dropout": 0.1},
         {"algo_kwargs": {"use_tucker": True}},
         {"algo_kwargs": {"nara_embed": "bogus"}},
-        {"dora": True},
     ],
 )
 def test_config_refuses(kw):
@@ -314,6 +435,12 @@ def test_config_refuses(kw):
         assert AdapterConfig(algo="nara", dim=DIM, alpha=float(DIM)).validate()
 
     must_fail(valid_flagged, "a valid config was flagged")
+
+
+def test_nara_and_dora_validate_together():
+    config = AdapterConfig(algo="nara", dim=DIM, alpha=float(DIM), dora=True)
+    assert config.validate() == []
+    assert config.record.needs_sigma
 
 
 def test_state_dict_covers_the_hypernetwork():

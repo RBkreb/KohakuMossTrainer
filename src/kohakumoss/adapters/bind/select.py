@@ -69,9 +69,18 @@ def _stored_dora(t: Target):
 
 def _dora(t: Target, ctx: BindCtx):
     detach = ctx.detach and ctx.training
-    if t.stored or t.record.needs_sigma:
-        # A stored base, or a per-sample delta (the magnitude stays the fixed
-        # export-sigma one): the DoRA bypass route on either base.
+    if t.record.needs_sigma:
+        # A dynamic per-sample delta: the magnitude is recomputed from
+        # W + dW(sigma) every forward, never cached or fused (the core moves).
+        if not t.wd_on_out:
+            fn = dora.nara_in
+        elif t.linear.bias is None:
+            fn = dora.nara_out
+        else:
+            fn = dora.nara_out_biased
+        return partial(fn, t.layer, t.base_fn, t.lyco, ctx.m, detach)
+    if t.stored:
+        # A stored base: the DoRA bypass route on the fixed delta.
         fn = _stored_dora(t)
         return partial(fn, t.layer, t.base_fn, t.unit_fn, t.lyco, ctx.m, detach)
     mix, lin = compose.mix_of(ctx.m), compose.lin_of(t)

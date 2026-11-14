@@ -351,7 +351,7 @@ def test_export_roundtrip(algo, fmt, tmp_path):
 @pytest.mark.parametrize("algo", ["loha", "lokr"])
 def test_dora_nara_bypass_matches_formula(algo):
     """DoRA on a noise-conditioned delta: y = b + (1-m) Wx + m s (Wx + dW(sigma) x),
-    s the magnitude ratio of the fixed export-sigma delta."""
+    s the magnitude ratio of the live per-sample delta, normalized in fp32."""
     w, b, x = problem()
     sigma, seq = layout()
     m = 0.7
@@ -363,14 +363,6 @@ def test_dora_nara_bypass_matches_formula(algo):
     y = aset.targets[0].linear(x)
 
     with torch.no_grad():
-        dw_fixed = ref_delta(
-            algo,
-            lyco,
-            ref_hyper(aset.shared, torch.tensor([lyco.export_sigma]), torch.float64)[0],
-        ).double()
-        s = lyco.dora_scale.double().reshape(-1) / (
-            (w.double() + dw_fixed).norm(dim=1) + torch.finfo(torch.float64).eps
-        )
         wx = F.linear(x.double(), w.double())
         bias = b.double().reshape(1, -1)
         ref = wx + bias
@@ -378,12 +370,41 @@ def test_dora_nara_bypass_matches_formula(algo):
         for sample in range(cores.shape[0]):
             sel = rows == sample
             dw = ref_delta(algo, lyco, cores[sample]).double()
+            s = lyco.dora_scale.double().reshape(-1) / (
+                (w.double() + dw).norm(dim=1) + torch.finfo(torch.float64).eps
+            )
             ref[sel] = (
                 (1 - m) * wx[sel]
                 + m * (s.reshape(1, -1) * (wx[sel] + F.linear(x[sel].double(), dw)))
                 + bias
             )
     assert torch.allclose(y.double(), ref, atol=1e-3, rtol=1e-3), (y - ref).abs().max()
+
+    def static_magnitude():
+        """The old fixed export-sigma magnitude no longer matches."""
+        with torch.no_grad():
+            dw_fixed = ref_delta(
+                algo,
+                lyco,
+                ref_hyper(
+                    aset.shared, torch.tensor([lyco.export_sigma]), torch.float64
+                )[0],
+            ).double()
+            s = lyco.dora_scale.double().reshape(-1) / (
+                (w.double() + dw_fixed).norm(dim=1) + torch.finfo(torch.float64).eps
+            )
+            static = wx + bias
+            for sample in range(cores.shape[0]):
+                sel = rows == sample
+                dw = ref_delta(algo, lyco, cores[sample]).double()
+                static[sel] = (
+                    (1 - m) * wx[sel]
+                    + m * (s.reshape(1, -1) * (wx[sel] + F.linear(x[sel].double(), dw)))
+                    + bias
+                )
+        assert torch.allclose(y.double(), static, atol=1e-3, rtol=1e-3)
+
+    must_fail(static_magnitude, "the magnitude ignored the live core")
 
 
 def test_lokr_rejects_a_full_w2():

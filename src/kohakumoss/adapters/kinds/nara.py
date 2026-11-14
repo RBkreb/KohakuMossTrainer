@@ -89,6 +89,7 @@ NARA = register(
         loraplus_tensors=("lora_up.weight",),
         needs_sigma=True,
         shared_module=_shared,
+        supports_dora=True,
         supports_nara=True,
     )
 )

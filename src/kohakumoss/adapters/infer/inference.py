@@ -297,8 +297,11 @@ class AdapterStack:
             self._add_dense(path, module, dw, db, scale)
             return
         if target.wd:
-            # A per-sample delta: the DoRA bypass with the module's dynamic core, its
-            # ratio taken once from the effective unfolded weight.
+            # A per-sample delta: the DoRA bypass with the module's dynamic core,
+            # its magnitude recomputed from the live cores every forward.
+            lyco.multiplier = m
+            lyco.bypass_mode = True
+            self.live.append(lyco)
             self._chain(module, self._stored_dora(path, module, target, m, scale))
             self.earlier.setdefault(path, []).append(
                 partial(_first, target.delta_at(m))
@@ -341,18 +344,36 @@ class AdapterStack:
         self.earlier.setdefault(path, []).append(partial(_first, target.delta_at(m)))
 
     def _stored_dora(self, path, module, target, m: float, s):
-        """The DoRA chain of a stored base, its ratio taken once from one transient
-        copy of the effective unfolded weight."""
-        w = self._unfolded_base(module, path)
-        if w is None:
-            w = module.base_weight(torch.float32)
-        ratio = stored.dora_ratio(target.lyco, w.float(), target.unit_fn())
-        del w
+        """The DoRA chain of a stored base: a fixed delta takes its ratio once
+        from one transient copy of the effective unfolded weight; a NaRA delta
+        recomputes it every forward from the live cores."""
         lyco = target.lyco
         bias = None
         if lyco.wd_on_out and module.bias is not None:
             bias = module.bias.detach().float()
+        if target.record.needs_sigma:
+            # Snapshot the earlier adapters: this one's own delta joins `earlier`
+            # after the chain is built and must not enter its own norm.
+            prior = list(self.earlier.get(path, []))
+            scale = self.row_scales.get(path)
+            base_fn = partial(self._nara_base, module, prior, scale)
+            return lambda prev: stored.wire_dora_nara(prev, lyco, m, base_fn, s, bias)
+        w = self._unfolded_base(module, path)
+        if w is None:
+            w = module.base_weight(torch.float32)
+        ratio = stored.dora_ratio(lyco, w.float(), target.unit_fn())
+        del w
         return lambda prev: stored.wire_dora(prev, lyco, m, ratio, s, bias)
+
+    @staticmethod
+    def _nara_base(module, prior, scale):
+        """The effective unfolded weight for a NaRA DoRA norm (transient)."""
+        w = module.base_weight(torch.float32)
+        if scale is not None:
+            w = w / _rows(scale, w)
+        for dw in prior:
+            w = w + dw().to(w.device)
+        return w
 
     @staticmethod
     def _fold(dw: Tensor, db, scale):

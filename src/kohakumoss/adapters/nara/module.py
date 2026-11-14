@@ -46,6 +46,23 @@ class NaraMixin:
         rows = rows_of(seq, self.nara_axis, sigma.shape[0], sigma.device)
         return self.shared(sigma).to(x.dtype), rows
 
+    def dora_ratio(self, w: Tensor, detach: bool) -> tuple[Tensor, Tensor]:
+        """(mag / ||W + dW(sigma_s)|| per sample over the DoRA axis, fp32
+        [B, rows]; the token -> sample rows). Recomputed every forward from the
+        live cores: no static-BA norm cache or fused kernel applies."""
+        sigma, seq = get_context()
+        rows = rows_of(seq, self.nara_axis, sigma.shape[0], sigma.device)
+        cores = self.shared(sigma)
+        norms = self.dora_norms(w.to(cores.device), cores)
+        norms = norms + torch.finfo(torch.float32).eps
+        if detach:
+            norms = norms.detach()
+        return self.dora_scale.float().reshape(-1).to(norms.device) / norms, rows
+
+    def dora_norms(self, w: Tensor, cores: Tensor) -> Tensor:
+        """||W + dW(sigma_s)|| over the DoRA axis, one row per sample, fp32."""
+        raise NotImplementedError
+
     def token_cores(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """(one core per token row in `x`'s dtype, the token -> sample rows): the
         step's per-sample cores gathered through the layer's axis."""
@@ -104,6 +121,23 @@ class NaRAModule(NaraMixin, LoConModule):
         core = self.core_at(self.export_sigma)
         weight = self.lora_up.weight.float() @ core.T @ self.lora_down.weight.float()
         return weight.to(device) * self.scalar.to(device)
+
+    def dora_norms(self, w: Tensor, cores: Tensor) -> Tensor:
+        """Gram expansion of ||W + B C^T A||^2 = ||W||^2 + 2<W, dW> + ||dW||^2:
+        only [B, out, r] intermediates, no per-sample dense delta."""
+        up = self.lora_up.weight.float() * (self.scale * self.scalar.float())
+        down = self.lora_down.weight.float()
+        if self.wd_on_out:
+            base = (w * w).sum(dim=1)
+            cross = (torch.einsum("or,srk->sok", w @ down.T, cores) * up).sum(dim=-1)
+            gram = torch.einsum("sji,jk,skl->sil", cores, down @ down.T, cores)
+            delta = torch.einsum("ok,skl,ol->so", up, gram, up)
+        else:
+            base = (w * w).sum(dim=0)
+            cross = torch.einsum("ia,sba,bi->si", w.T @ up, cores, down)
+            gram = torch.einsum("sia,ab,slb->sil", cores, up.T @ up, cores)
+            delta = torch.einsum("ki,skl,li->si", down, gram, down)
+        return (base + 2 * cross + delta).clamp_min(0).sqrt()
 
     def bypass_forward_diff(self, x, scale=1):
         cores, _ = self.token_cores(x)
@@ -183,6 +217,20 @@ class NaraLohaModule(NaraMixin, LohaModule):
             gamma=gamma,
         )
         return weight.reshape(shape) if shape is not None else weight
+
+    def dora_norms(self, w: Tensor, cores: Tensor) -> Tensor:
+        """One dense merged weight per sample (the Hadamard delta has no rank
+        factorization), the same cost profile as the bypass."""
+        gamma = self.scale * self.scalar.float()
+        w1a, w1b = self.hada_w1_a.float(), self.hada_w1_b.float()
+        w2a, w2b = self.hada_w2_a.float(), self.hada_w2_b.float()
+        dim = 1 if self.wd_on_out else 0
+        norms = []
+        for core in cores:
+            p = w1a @ core.T @ w1b
+            q = w2a @ core.T @ w2b
+            norms.append((w + (p * q) * gamma).norm(dim=dim))
+        return torch.stack(norms)
 
     def bypass_forward_diff(self, x, scale=1):
         cores, rows = self.sample_cores(x)
@@ -284,6 +332,39 @@ class NaraLokrModule(NaraMixin, LokrModule):
         gamma = torch.tensor(self.scale, dtype=torch.float32, device=core.device)
         weight = make_kron(w1, w2, gamma)
         return weight.reshape(shape) if shape is not None else weight
+
+    def dora_norms(self, w: Tensor, cores: Tensor) -> Tensor:
+        """Kronecker structure: the cross term reads W as [m1, m2, n1, n2] blocks,
+        and ||dW||^2 factorizes over the kron axes (no dense delta)."""
+        gamma = self.scale * self.scalar.float()
+        w1 = (
+            self.lokr_w1.float()
+            if self.use_w1
+            else self.lokr_w1_a.float() @ self.lokr_w1_b.float()
+        )
+        w2 = (
+            torch.einsum(
+                "or,skr,ki->soi", self.lokr_w2_a.float(), cores, self.lokr_w2_b.float()
+            )
+            * gamma
+        )
+        m1, n1 = w1.shape
+        m2, n2 = w2.shape[1:]
+        w4 = w.reshape(m1, m2, n1, n2)
+        batch = cores.shape[0]
+        if self.wd_on_out:
+            base = (w * w).sum(dim=1)
+            cross = torch.einsum("ikjl,ij,skl->sik", w4, w1, w2).reshape(batch, -1)
+            delta = torch.einsum(
+                "i,sk->sik", (w1 * w1).sum(dim=1), (w2 * w2).sum(dim=2)
+            ).reshape(batch, -1)
+        else:
+            base = (w * w).sum(dim=0)
+            cross = torch.einsum("ikjl,ij,skl->sjl", w4, w1, w2).reshape(batch, -1)
+            delta = torch.einsum(
+                "j,sl->sjl", (w1 * w1).sum(dim=0), (w2 * w2).sum(dim=1)
+            ).reshape(batch, -1)
+        return (base + 2 * cross + delta).clamp_min(0).sqrt()
 
     def bypass_forward_diff(self, x, scale=1):
         cores, _ = self.token_cores(x)
