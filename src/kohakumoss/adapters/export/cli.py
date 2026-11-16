@@ -1,5 +1,7 @@
 """Entry points of scripts/export: convert a training state, or merge adapter files."""
 
+from pathlib import Path
+
 from kohakumoss.adapters.build.apply import apply
 from kohakumoss.adapters.build.config import inference_config
 from kohakumoss.adapters.infer.formats import config_from_meta, read
@@ -54,6 +56,35 @@ def _training_space(model, meta: dict) -> None:
     carry_fold(model, fold_of(meta)[1])
 
 
+def ema_state(path: str, tensors: dict, meta: dict, decay) -> tuple[dict, dict]:
+    """A checkpoint EMA state (`ema<decay>/` keys, averaged parameters only) as a
+    trainable-shaped state: prefix stripped, the non-averaged buffers and the
+    metadata taken from the sibling trainable.safetensors, so the export is one
+    self-contained file. `decay` picks one of several stored decays."""
+    prefixes = sorted({k.split("/", 1)[0] for k in tensors if k.startswith("ema") and "/" in k})
+    if not prefixes:
+        return tensors, meta
+    if decay is not None:
+        want = f"ema{decay:g}"
+        if want not in prefixes:
+            raise SystemExit(f"export: EMA_DECAY={decay} not in {prefixes}")
+        prefixes = [want]
+    elif len(prefixes) > 1:
+        raise SystemExit(f"export: {path} holds several EMA decays {prefixes}: set EMA_DECAY")
+    prefix = prefixes[0] + "/"
+    stripped = {k[len(prefix):]: v for k, v in tensors.items() if k.startswith(prefix)}
+    sibling = Path(path).with_name("trainable.safetensors")
+    if not sibling.is_file():
+        raise SystemExit(
+            f"export: {path} is an EMA state; the sibling trainable.safetensors "
+            "supplies its buffers and metadata"
+        )
+    base, base_meta = read(str(sibling))
+    for k, v in base.items():
+        stripped.setdefault(k, v)
+    return stripped, {**base_meta, **meta}
+
+
 def _save_model(model, cfg: dict, fmt: str, fused: bool) -> None:
     dtype = DTYPES[cfg.get("SAVE_DTYPE", "bf16")]
     if fmt == "diffusers":
@@ -64,13 +95,15 @@ def _save_model(model, cfg: dict, fmt: str, fused: bool) -> None:
 
 def export_main(cfg: dict) -> None:
     """ADAPTER (a training state of this version: a run checkpoint's
-    trainable.safetensors or a save_state file, its tag / spec / fold in the metadata)
-    on WEIGHTS -> OUT in FORMAT (`comfy` / `hf` as SAVE_FORMAT spells them); a
-    full-finetune checkpoint exports as a merged / diffusers transformer. A file without
-    that metadata is refused (SystemExit)."""
+    trainable.safetensors or ema.safetensors, or a save_state file, its tag / spec /
+    fold in the metadata; an EMA state takes its buffers and metadata from the
+    sibling trainable) on WEIGHTS -> OUT in FORMAT (`comfy` / `hf` as SAVE_FORMAT
+    spells them); a full-finetune checkpoint exports as a merged / diffusers
+    transformer. A file without that metadata is refused (SystemExit)."""
     _problems(cfg, ("WEIGHTS", "ADAPTER", "OUT"))
     dtype = DTYPES[cfg.get("SAVE_DTYPE", "bf16")]
     tensors, meta = read(cfg["ADAPTER"])
+    tensors, meta = ema_state(cfg["ADAPTER"], tensors, meta, cfg.get("EMA_DECAY"))
     try:
         full = state_kind(cfg["ADAPTER"], meta) == FULL_TAG
     except ValueError as err:
