@@ -1,7 +1,7 @@
 """Optimiser parameter groups of an adapter set: weight-decay rules, Muon eligibility
 and the LoRA+ ratio on each kind's zero-initialised factors."""
 
-NO_DECAY = ("dora_scale", "rescale", "scalar", "lambda_layer", "alpha")
+NO_DECAY = ("dora_scale", "rescale", "scalar", "lambda_layer", "alpha", "sora_")
 WD_RULES = ("moss", "none", "all")
 
 

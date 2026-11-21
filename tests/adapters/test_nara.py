@@ -240,6 +240,57 @@ def test_step_state_captures_the_noise_level():
         get_context()
 
 
+@pytest.mark.parametrize(
+    "kw", [{"sora_post_rank": 2}, {"sora_post_rank": 2, "sora_pre_diag": True}]
+)
+def test_lycoris_export_keeps_the_dynamic_core_under_a_uniform_fold(tmp_path, kw):
+    """A NaRA adapter needs the lycoris format to keep its hypernetwork; a uniform fold
+    scale commutes with SORA's rotation, so that export stays available and exact."""
+    w, b, x = problem()
+    sigma, seq = layout()
+    s = torch.full((OUT,), 3.0)
+    # A fold scales the layer's whole output, so the bias scales with the weight.
+    aset = adapted(dense_linear(w * s.reshape(-1, 1), b * s), **kw)
+    perturb(aset)
+    set_context(sigma, seq)
+    trained = aset.targets[0].linear(x).detach()
+
+    path = str(tmp_path / "nara_folded.safetensors")
+    aset.export(
+        path,
+        "lycoris",
+        dtype=None,
+        row_scales={t.path: s for t in aset.targets},
+    )
+
+    twin = dense_linear(w, b)
+    stack = AdapterStack(holder(twin), mode="bypass", device="cpu")
+    stack.add(path)
+    assert stack.needs_sigma, "the hypernetwork did not survive the export"
+    set_context(sigma, seq)
+    loaded = twin(x) * s.reshape(-1)
+    assert torch.allclose(loaded, trained, atol=2e-5, rtol=2e-5), (
+        (loaded - trained).abs().max()
+    )
+    stack.remove()
+
+
+def test_lycoris_export_refuses_a_per_row_fold_with_sora():
+    """A per-row fold scale does not commute with the rotation: no factor set carries
+    it, so the export refuses rather than writing a silently wrong file."""
+    w, b, _ = problem()
+    aset = adapted(dense_linear(w, b), sora_post_rank=2)
+    rows = torch.linspace(0.5, 2.0, OUT)
+    with pytest.raises(ValueError, match="per-output-row fold scale"):
+        aset.export(
+            "unused.safetensors",
+            "lycoris",
+            dtype=None,
+            row_scales={t.path: rows for t in aset.targets},
+        )
+    aset.remove()
+
+
 @pytest.mark.parametrize("fmt", ["lycoris", "raw"])
 def test_export_roundtrip(tmp_path, fmt):
     w, b, x = problem()
@@ -318,7 +369,7 @@ def test_dora_bypass_matches_dynamic_norm(wd_on_out):
 
     with torch.no_grad():
         cores = ref_hyper(aset.shared, sigma, torch.float64)
-        ref = torch.zeros_like(x.double())
+        ref = torch.zeros(x.shape[0], OUT, dtype=torch.float64)
         for sample in range(cores.shape[0]):
             sel = rows == sample
             core = cores[sample]
@@ -365,7 +416,7 @@ def test_dora_bypass_matches_dynamic_norm(wd_on_out):
             s = lyco.dora_scale.double().reshape(-1) / (
                 merged.norm(dim=dim) + torch.finfo(torch.float64).eps
             )
-            static = torch.zeros_like(x.double())
+            static = torch.zeros(x.shape[0], OUT, dtype=torch.float64)
             for sample in range(cores.shape[0]):
                 sel = rows == sample
                 cs = cores[sample]

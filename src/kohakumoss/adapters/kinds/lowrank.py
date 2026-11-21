@@ -141,6 +141,8 @@ LOCON = register(
         loraplus_tensors=("lora_up.weight",),
         supports_dora=True,
         supports_nara=True,
+        supports_sora=True,
+        supports_eva=True,
     )
 )
 LOHA = register(
@@ -158,6 +160,7 @@ LOHA = register(
         loraplus_tensors=("hada_w2_a",),
         supports_dora=True,
         supports_nara=True,
+        supports_sora=True,
     )
 )
 LOKR = register(
@@ -174,6 +177,8 @@ LOKR = register(
         loraplus_tensors=("lokr_w2", "lokr_w2_b"),
         supports_dora=True,
         supports_nara=True,
+        supports_sora=True,
+        supports_eva=True,
     )
 )
 TLORA = register(

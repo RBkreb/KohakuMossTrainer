@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from kohakumoss.adapters import eva
 from kohakumoss.adapters.lycoris.tuning import (
     restore_lycoris_tuning,
     set_lycoris_tuning,
@@ -352,7 +353,7 @@ def worker(
         release_nonlocal(built.backbone, keep)
     torch.manual_seed(k["SEED"] + rank)  # per-rank stream for everything after build
     hooks = layout.hooks(ctx)
-    init_weights(k, built, output_dir)
+    inited = init_weights(k, built, output_dir)
     compile_model(built.backbone, built.plan.compile)
     normalizer = TokenNormalizer(hooks.reduce, hooks.world_factor)
     autocast = autocast_factory(prec, device)
@@ -375,10 +376,13 @@ def worker(
     bundle, accumulate = build_optim(k, built, device, prec, hooks, keep, resumed)
     if objective is not None:
         objective.scaler = bundle.scaler
-    ema = build_ema_for(k, built, bundle, names, rank)
     writes = data_rank == rank and built.feed is None
     writer = build_writer(k, loader, writes=writes, rank=rank)
     loader, batcher = _inputs(k, built, device, loader, writer)
+    if k.get("EVA") not in (None, False) and not resumed and not inited:
+        eva.calibrate(k, built, step, loader, device, autocast)
+    # After the EVA init: the EMA copies its masters from the live parameters.
+    ema = build_ema_for(k, built, bundle, names, rank)
     timeline = build_timeline(device)
     for enc in (built.text_encoder, built.vae):
         if hasattr(enc, "set_timeline"):

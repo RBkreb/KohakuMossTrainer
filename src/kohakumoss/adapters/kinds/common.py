@@ -5,6 +5,7 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.bind.dora import decomposed
 
 F32 = torch.float32
@@ -55,8 +56,7 @@ def _unit_at(t, multiplier: float) -> Callable[[], tuple[Tensor, None]]:
     return scaled
 
 
-def delta_builder(t, multiplier: float) -> Callable[[], tuple[Tensor, Tensor | None]]:
-    """(dW, db) builder for `t` at a fixed multiplier, fp32 on the adapter device."""
+def _inner_builder(t, multiplier: float) -> Callable[[], tuple[Tensor, Tensor | None]]:
     if t.wd:
         return _dora_at(t, multiplier)
     if t.record.diff_weight_at is not None:
@@ -64,3 +64,11 @@ def delta_builder(t, multiplier: float) -> Callable[[], tuple[Tensor, Tensor | N
         if special is not None:
             return special
     return _unit_at(t, multiplier)
+
+
+def delta_builder(t, multiplier: float) -> Callable[[], tuple[Tensor, Tensor | None]]:
+    """(dW, db) builder for `t` at a fixed multiplier, fp32 on the adapter device;
+    SORA conditioning folds into the delta here (export / merge / dense paths)."""
+    if sora.active(t.lyco):
+        return sora.delta_at(t, _inner_builder(t, 1.0), multiplier)
+    return _inner_builder(t, multiplier)

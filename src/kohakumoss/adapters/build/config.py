@@ -64,6 +64,10 @@ class AdapterConfig:
     dora_on_output: bool = True
     dora_detach: bool = False
     nara: bool = False
+    sora_post_rank: int = 0
+    sora_initial_s_p: float = 1.0
+    sora_pre_diag: bool = False
+    eva: dict | None = None
     dropout: float = 0.0
     rank_dropout: float = 0.0
     module_dropout: float = 0.0
@@ -125,6 +129,18 @@ class AdapterConfig:
             problems.append("DORA ignores input dropout; set DROPOUT['input']=0")
         if self.nara and (rec is None or not rec.supports_nara):
             problems.append(f"NARA does not apply to ALGO={self.algo!r}")
+        problems += self._sora_problems(rec)
+        if self.eva is not None:
+            if rec is None or not rec.supports_eva:
+                problems.append(f"EVA does not apply to ALGO={self.algo!r}")
+            unknown = sorted(set(self.eva) - {"batches", "min_batches", "sim_thresh"})
+            if unknown:
+                problems.append(f"EVA has unknown keys {unknown}")
+            if self.module_dropout > 0:
+                problems.append(
+                    "EVA calibration needs every layer's activations; "
+                    "set DROPOUT['module']=0"
+                )
         for name in ("dropout", "rank_dropout", "module_dropout"):
             value = getattr(self, name)
             if not 0.0 <= value < 1.0:
@@ -132,6 +148,27 @@ class AdapterConfig:
         if rec is not None:
             problems += self._kind_problems(rec)
         return problems
+
+    def _sora_problems(self, rec) -> list[str]:
+        """Post-Ortho stacks with DoRA; Pre-Diag replaces it (one conditioning)."""
+        out = []
+        if not (self.sora_post_rank or self.sora_pre_diag):
+            return out
+        if rec is None or not rec.supports_sora:
+            out.append(f"SORA does not apply to ALGO={self.algo!r}")
+        if self.sora_post_rank < 0:
+            out.append("SORA_POST_ORTHO['rank'] must be >= 0 (0 = off)")
+        if self.sora_initial_s_p <= 0:
+            out.append("SORA_POST_ORTHO['initial_s_p'] must be positive")
+        if self.sora_pre_diag:
+            if self.dora:
+                out.append("SORA_PRE_DIAG replaces DoRA; set DORA=False")
+            if self.dropout > 0 or self.rank_dropout > 0:
+                out.append(
+                    "SORA_PRE_DIAG reads the delta twice per forward; set "
+                    "DROPOUT['input']=0 and DROPOUT['rank']=0"
+                )
+        return out
 
     def _kind_problems(self, rec) -> list[str]:
         out = []
@@ -191,6 +228,16 @@ class AdapterConfig:
         return kwargs
 
 
+def _sora_post(value) -> tuple[int, float]:
+    """(rank, initial_s_p) of the SORA_POST_ORTHO knob: a rank dict, a bare rank,
+    or a bool (True = rank 1)."""
+    if isinstance(value, dict):
+        return int(value.get("rank", 1)), float(value.get("initial_s_p", 1.0))
+    if isinstance(value, bool):
+        return int(value), 1.0
+    return int(value or 0), 1.0
+
+
 def config_from_knobs(cfg: dict) -> AdapterConfig:
     """AdapterConfig from the train-script globals (ALGO, PRESET, DIM, ...)."""
     dropout = cfg.get("DROPOUT", {}) or {}
@@ -199,6 +246,9 @@ def config_from_knobs(cfg: dict) -> AdapterConfig:
         if "+text-refiner" not in preset and not preset.endswith(".toml"):
             preset = f"{preset}+text-refiner"
     algo_kwargs = dict(cfg.get("ALGO_KWARGS", {}) or {})
+    post_rank, initial_s_p = _sora_post(cfg.get("SORA_POST_ORTHO", 0))
+    raw_eva = cfg.get("EVA")
+    eva = None if raw_eva is None or raw_eva is False else dict(raw_eva or {})
     return AdapterConfig(
         algo=cfg.get("ALGO", "lora"),
         preset=preset,
@@ -209,6 +259,10 @@ def config_from_knobs(cfg: dict) -> AdapterConfig:
         dora_on_output=bool(algo_kwargs.pop("wd_on_out", True)),
         dora_detach=bool(cfg.get("DORA_DETACH", False)),
         nara=bool(cfg.get("NARA", False)),
+        sora_post_rank=post_rank,
+        sora_initial_s_p=initial_s_p,
+        sora_pre_diag=bool(cfg.get("SORA_PRE_DIAG", False)),
+        eva=eva,
         dropout=float(dropout.get("input", 0.0)),
         rank_dropout=float(dropout.get("rank", 0.0)),
         module_dropout=float(dropout.get("module", 0.0)),

@@ -77,6 +77,10 @@ class Kind:
     supports_dora: bool = False
     # The NARA switch may condition this kind's delta on the noise level.
     supports_nara: bool = False
+    # The SORA switches may condition this kind's output (additive delta kinds).
+    supports_sora: bool = False
+    # EVA may initialise this kind's input-side factors from activation SVDs.
+    supports_eva: bool = False
     training_dependent: bool = False
     # (t, generator) -> this step's random draws of the layer.
     draw_step: Callable | None = None

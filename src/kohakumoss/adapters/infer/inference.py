@@ -8,6 +8,7 @@ import torch
 from lycoris.modules import IA3Module, get_module, make_module
 from torch import Tensor, nn
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.bind.compose import dense_of
 from kohakumoss.adapters.build.apply import apply, compute_device
 from kohakumoss.adapters.build.config import inference_config
@@ -302,7 +303,8 @@ class AdapterStack:
             lyco.multiplier = m
             lyco.bypass_mode = True
             self.live.append(lyco)
-            self._chain(module, self._stored_dora(path, module, target, m, scale))
+            make = sora.wrap_infer(self._stored_dora(path, module, target, m, scale), lyco, m)
+            self._chain(module, make)
             self.earlier.setdefault(path, []).append(
                 partial(_first, target.delta_at(m))
             )
@@ -313,14 +315,17 @@ class AdapterStack:
         self.earlier.setdefault(path, []).append(partial(_first, target.delta_at(m)))
         if scale is not None and rec.stacking == Stacking.ADDITIVE:
             s = scale.to(self.device).float()
-            self._chain(module, lambda prev: partial(_scaled_bypass, prev, lyco, m, s))
+            make = sora.wrap_infer(
+                lambda prev: partial(_scaled_bypass, prev, lyco, m, s), lyco, m
+            )
+            self._chain(module, make)
             return
 
         def make(prev):
             lyco.org_forward = prev
             return partial(_lyco_bypass, prev, lyco, m)
 
-        self._chain(module, make)
+        self._chain(module, sora.wrap_infer(make, lyco, m))
 
     def _attach_stored(self, path, module, lyco, m: float, scale) -> None:
         """Chain the module's bypass onto a quantized / streamed base, whatever the
@@ -337,10 +342,14 @@ class AdapterStack:
         target = Target(path, lyco.lora_name, module, lyco, None, self.backend)
         s = None if scale is None else scale.to(self.device).float().reshape(-1)
         if target.wd:
-            self._chain(module, self._stored_dora(path, module, target, m, s))
+            make = sora.wrap_infer(self._stored_dora(path, module, target, m, s), lyco, m)
+            self._chain(module, make)
         else:
             bias_u = stored.diff_bias(lyco, module, s)
-            self._chain(module, lambda prev: stored.wire(prev, lyco, m, s, bias_u))
+            make = sora.wrap_infer(
+                lambda prev: stored.wire(prev, lyco, m, s, bias_u), lyco, m
+            )
+            self._chain(module, make)
         self.earlier.setdefault(path, []).append(partial(_first, target.delta_at(m)))
 
     def _stored_dora(self, path, module, target, m: float, s):
@@ -406,9 +415,10 @@ class AdapterStack:
     def _build(self, linear: nn.Module, path: str, parts: dict, hyper=None):
         name = lora_name_of("lora_unet", path)
         parts = dict(parts)
+        sora_tensors = sora.pop_tensors(parts)
         parts.setdefault("alpha", _default_alpha(parts))
         if hyper is not None:
-            return self._build_nara(linear, path, parts, hyper)
+            return self._build_nara(linear, path, parts, hyper, sora_tensors)
         dora_scale = parts.pop("dora_scale", None)
         sd = {f"{name}.{k}": v for k, v in parts.items()}
         lyco_type, params = get_module(sd, name)
@@ -424,6 +434,7 @@ class AdapterStack:
         if lyco is None:
             raise KeyError(f"{path}: {lyco_type.__name__} cannot load from a file")
         weak_org(lyco, linear)
+        sora.attach_tensors(lyco, sora_tensors)
         if dora_scale is not None:
             lyco.wd = True
             lyco.wd_on_out = dora_scale.shape[0] == lyco.shape[0]
@@ -433,8 +444,10 @@ class AdapterStack:
         lyco.eval()
         return lyco
 
-    def _build_nara(self, linear: nn.Module, path: str, parts: dict, hyper):
-        return nara_build.build_nara(linear, path, parts, hyper, self.device)
+    def _build_nara(self, linear: nn.Module, path: str, parts: dict, hyper, sora_tensors):
+        return nara_build.build_nara(
+            linear, path, parts, hyper, self.device, sora_tensors
+        )
 
     def _undo_comfy(self, linear, lyco, parts, override) -> None:
         """Invert the ComfyUI-semantics conversions of our own comfy exports."""

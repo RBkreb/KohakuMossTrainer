@@ -16,6 +16,7 @@ from lycoris.modules.tlora import TLoraModule
 from lycoris.wrapper import LycorisNetwork
 from torch import nn
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.build.config import AdapterConfig
 from kohakumoss.adapters.build.presets import resolve_preset
 from kohakumoss.adapters.build.target import NormTarget, Target, weak_org
@@ -124,6 +125,7 @@ def build_targets(
             raise RuntimeError(f"{paths[id(linear)]} already carries an adapter")
         weak_org(lyco, linear)
         deferred.restore(lyco, linear)
+        sora.attach(lyco, linear, config)
         targets.append(_target(paths[id(linear)], lyco, linear))
     trained = build_norms(model, norm_patterns, config) if config.train_norms else []
     return targets, trained

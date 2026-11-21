@@ -91,6 +91,8 @@ NARA = register(
         shared_module=_shared,
         supports_dora=True,
         supports_nara=True,
+        supports_sora=True,
+        supports_eva=True,
     )
 )
 NARA_LOHA = register(_nara_kind(LOHA, NaraLohaModule, "nara-loha", _comfy_loha))

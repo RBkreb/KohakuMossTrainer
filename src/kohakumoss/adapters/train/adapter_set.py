@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.bind.select import bind_target, training_dependent
 from kohakumoss.adapters.build.config import AdapterConfig
 from kohakumoss.adapters.build.target import CHILD, SHARED, NormTarget, Target
@@ -97,6 +98,33 @@ def _based(t: Target, base_of: Callable | None):
     finally:
         t.base_override = None
         t.resolve_base()
+
+
+def _refuse_per_row_sora(targets, row_scales) -> None:
+    """ValueError when a SORA layer's fold scale differs per output row. A uniform
+    fold factor commutes with the rotation (`R (c W) = c R W`), so the factor set
+    carries it exactly; a per-row one does not, and no factor term expresses the
+    conjugated rotation `S R S^-1` that would be needed.
+
+    Only the modulation layers fold per row (the c/s split across the gate_a / gate_f
+    rows of `shared_block_modulation`), so this fires for PRESET modifiers that target
+    them ('+modulation', 'all') and never for 'attn' / 'attn-mlp' / 'full-block'."""
+    bad = [
+        t.path
+        for t in targets
+        if sora.active(t.lyco)
+        and t.path in row_scales
+        and convert.per_row(row_scales[t.path])
+    ]
+    if bad:
+        raise ValueError(
+            f"a SORA adapter on these layers trains on a per-output-row fold scale "
+            f"({bad[:4]}, {len(bad)} in all, typically the modulation layers of a "
+            "'+modulation' / 'all' PRESET): export 'comfy' (exact dense diff) or "
+            "'merged', where the fold is undone, or keep SORA off the modulation "
+            "layers; 'attn' / 'attn-mlp' / 'full-block' have no per-row scale and "
+            "export as 'lycoris' with the factor set"
+        )
 
 
 def ensure_bias(linear: nn.Module, device) -> bool:
@@ -337,6 +365,8 @@ class LycoAdapterSet:
         place of its own (None: its own)."""
         out, joint = {}, {}
         member = {}
+        if row_scales and fmt == "lycoris":
+            _refuse_per_row_sora(self.targets, row_scales)
         if fused_qkv:
             for fused, parts in qkv_groups(t.path for t in self.targets).items():
                 member.update({path: (fused, name) for name, path in parts.items()})
@@ -389,7 +419,12 @@ class LycoAdapterSet:
         dense = {}
         for name, (t, _, inv) in parts.items():
             with _based(t, base_of):
-                dense[name] = convert.scaled_diff(t, 1.0 if inv is None else inv)
+                dense[name] = {
+                    k: v.cpu()
+                    for k, v in convert.scaled_diff(
+                        t, 1.0 if inv is None else inv
+                    ).items()
+                }
         cols = next(iter(parts.values()))[0].linear.in_features
         return fused_diff(dense, rows, cols)
 

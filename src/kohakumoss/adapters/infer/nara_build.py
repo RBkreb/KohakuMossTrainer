@@ -4,6 +4,7 @@ hypernetwork: the hypernetwork stem names the kind, the tensor names the variant
 import torch
 from torch import nn
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.build.network import lora_name_of
 from kohakumoss.adapters.build.target import weak_org
 from kohakumoss.adapters.nara.module import NaraLohaModule, NaraLokrModule, NaRAModule
@@ -14,7 +15,9 @@ LOKR_KEYS = frozenset(
 )
 
 
-def build_nara(linear: nn.Module, path: str, parts: dict, hyper, device) -> nn.Module:
+def build_nara(
+    linear: nn.Module, path: str, parts: dict, hyper, device, sora_tensors: dict | None = None
+) -> nn.Module:
     """The variant module of `parts` wired to `hyper`, frozen on `device`."""
     name = lora_name_of("lora_unet", path)
     parts = dict(parts)
@@ -74,6 +77,7 @@ def build_nara(linear: nn.Module, path: str, parts: dict, hyper, device) -> nn.M
     lyco.set_shared(hyper)
     lyco.nara_axis = axis_of(path)
     weak_org(lyco, linear)
+    sora.attach_tensors(lyco, sora_tensors or {})
     lyco.to(device=device, dtype=torch.float32)
     lyco.requires_grad_(False)
     lyco.eval()

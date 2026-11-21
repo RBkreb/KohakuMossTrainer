@@ -8,6 +8,7 @@ from functools import partial
 
 from torch import nn
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.bind import compose, dora, eager, forwards
 from kohakumoss.adapters.bind.context import BindCtx
 from kohakumoss.adapters.bind.kernel_ops import kernel_ops
@@ -138,6 +139,11 @@ def bind_target(
             fn = rec.kernel_bypass(t, ctx) if ctx.mode == "bypass" else _merge(t, ctx)
         fn = fn or _eager(t, ctx)
     t.autotuned = ops.autotuned
+    # SORA inside the module-dropout wrap: a dropped module skips its conditioning too.
+    if getattr(lyco, "sora_pre_diag", False):
+        fn = sora.pre_diag(fn, lyco, ctx.m)
+    if getattr(lyco, "sora_C", None) is not None:
+        fn = sora.post_ortho(fn, lyco, ctx.m)
     if rec.own_forward is None and module_p > 0 and training:
         fn = eager.module_dropout(t.layer, t.draws, fn)
     return fn

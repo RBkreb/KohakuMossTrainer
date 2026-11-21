@@ -5,14 +5,18 @@ docs/guides/export-to-comfy.md)."""
 import torch
 from torch import Tensor
 
+from kohakumoss.adapters import sora
 from kohakumoss.adapters.build.target import NormTarget, Target
 from kohakumoss.adapters.kinds.common import names
 from kohakumoss.adapters.kinds.record import Stacking
 
 
 def native(t: Target) -> dict[str, Tensor]:
-    """The LyCORIS module's own state dict (scalar folded, LyCORIS alpha rules)."""
-    return {k: v.detach() for k, v in t.lyco.state_dict().items()}
+    """The LyCORIS module's own state dict (scalar folded, LyCORIS alpha rules),
+    plus any SORA parameters its custom state_dict does not emit."""
+    out = {k: v.detach() for k, v in t.lyco.state_dict().items()}
+    out.update(sora.native_tensors(t.lyco))
+    return out
 
 
 def norm_native(n: NormTarget) -> dict[str, Tensor]:
@@ -40,7 +44,12 @@ def _comfy_dora_scale(t: Target, dora_scale: Tensor) -> Tensor:
 
 
 def comfy(t: Target) -> dict[str, Tensor]:
-    """Tensors ComfyUI evaluates to this layer's dW at strength 1."""
+    """Tensors ComfyUI evaluates to this layer's dW at strength 1. A SORA-conditioned
+    layer exports its exact dense diff: the rotation / base scale touches W itself,
+    which no low-rank factor set expresses (DoRA's row norm included)."""
+    if sora.active(t.lyco):
+        # Host tensors: the export set accumulates every layer's dense diff.
+        return {k: v.cpu() for k, v in scaled_diff(t, 1.0).items()}
     out = t.record.comfy_tensors(t) if t.record.comfy_tensors is not None else native(t)
     if t.wd and "dora_scale" in out:
         out["dora_scale"] = _comfy_dora_scale(t, out["dora_scale"])
@@ -51,7 +60,10 @@ def reciprocal(scale: Tensor | float) -> Tensor | float:
     return 1.0 / scale.float() if isinstance(scale, Tensor) else 1.0 / float(scale)
 
 
-def _per_row(scale) -> bool:
+def per_row(scale) -> bool:
+    """`scale` differs between output rows. The only fold shape a factor set cannot
+    carry through a SORA rotation: a uniform factor commutes with it, a per-row one
+    does not (`R S != S R`)."""
     return (
         isinstance(scale, Tensor)
         and scale.numel() > 1
@@ -88,16 +100,16 @@ def apply_row_scale(t: Target, tensors: dict, scale: Tensor | float) -> dict:
     """Multiply this layer's dW rows by `scale` (uniform or per output row) in the
     same tensor set: the output-row factor of each term, a uniform factor of each term,
     or an exact `diff` when the set has neither for this scale."""
-    per_row = _per_row(scale)
-    if isinstance(scale, Tensor) and not per_row:
+    uniform = not per_row(scale)
+    if isinstance(scale, Tensor) and uniform:
         scale = float(scale.flatten()[0]) if scale.numel() else 1.0
     if "diff" in tensors:
         return _row_scaled(tensors, names(("diff", "diff_b"), tensors), scale)
-    if t.record.stacking == Stacking.COMMUTING and not per_row:
+    if t.record.stacking == Stacking.COMMUTING and uniform:
         return dict(tensors)
     out_axis_dora = not t.wd or t.wd_on_out
     scaled = t.record.row_scale_tensors(tensors) if out_axis_dora else ()
-    if not scaled and not per_row:
+    if not scaled and uniform:
         scaled = t.record.uniform_scale_tensors(tensors)
     if not scaled:
         return scaled_diff(t, scale)
