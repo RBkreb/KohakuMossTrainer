@@ -72,6 +72,27 @@ def test_lokr_init_subspace_and_zero_up():
     assert (w @ sub.T @ sub - w).abs().max().item() < 1e-4
 
 
+def test_lokr_init_reports_a_comp_too_small():
+    """A w2_b init that needs more component rows than available returns the reason
+    instead of silently leaving the random init."""
+    m1, n1, n2, r2 = 2, 8, 8, 3
+
+    class Lyco:
+        use_w1 = True
+        use_w2 = False
+        lora_dim = r2
+        lokr_w1 = nn.Parameter(torch.randn(m1, n1))
+        lokr_w2_a = nn.Parameter(torch.randn(n2, r2))
+        lokr_w2_b = nn.Parameter(torch.zeros(r2, n2))
+
+    lyco = Lyco()
+    before = lyco.lokr_w2_b.clone()
+    why = _init_lokr(lyco, torch.randn(m1 * r2 - 1, n1 * n2))
+    assert why is not None
+    assert "component rows" in why
+    assert torch.equal(lyco.lokr_w2_b, before), "a refused init still wrote w2_b"
+
+
 def test_eva_refuses_incapable_kind_and_dropout():
     cfg = AdapterConfig(algo="loha", preset="attn", dim=4, eva={"batches": 4})
     assert any("EVA does not apply" in p for p in cfg.validate())

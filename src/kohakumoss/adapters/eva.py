@@ -58,45 +58,65 @@ def _fingerprint(x: Tensor) -> int:
     return hash(s.numpy().tobytes())
 
 
+COMPONENT_CAP = 512
+
+
+def _lokr_rows(lyco) -> int:
+    """The component rows a Kronecker w2_b init needs: one per (w1 row, w2_b rank)."""
+    w1 = lyco.lokr_w1 if lyco.use_w1 else lyco.lokr_w1_a @ lyco.lokr_w1_b
+    return int(w1.shape[0] * lyco.lokr_w2_b.shape[0])
+
+
 def _components(t) -> int:
-    """The input-side rank the layer's factors can express (capped: one layer's
-    component matrix must stay small next to the model)."""
+    """The input-side rank the layer's factors can express, capped at `COMPONENT_CAP`
+    so one layer's component matrix stays small next to the model. A LoKr layer whose
+    init needs more rows than the cap cannot be initialised; `_init_from` returns why,
+    and `calibrate` reports it instead of leaving the layer at its random init
+    silently."""
     lyco = t.lyco
     if hasattr(lyco, "lora_down"):
         return int(lyco.lora_dim)
-    w1 = lyco.lokr_w1 if lyco.use_w1 else lyco.lokr_w1_a @ lyco.lokr_w1_b
-    return min(int(w1.shape[0] * lyco.lora_dim), 512)
+    return min(_lokr_rows(lyco), COMPONENT_CAP)
 
 
-def _init_lora(lyco, comp: Tensor) -> None:
+def _init_lora(lyco, comp: Tensor) -> str | None:
     r = lyco.lora_dim
     lyco.lora_down.weight.copy_(comp[:r].to(lyco.lora_down.weight))
     lyco.lora_up.weight.zero_()
+    return None
 
 
-def _init_lokr(lyco, comp: Tensor) -> None:
+def _init_lokr(lyco, comp: Tensor) -> str | None:
     """w2_b (the zero-initialised input factor) from the dominant n2-directions of
-    the components reshaped over the kron input blocks; w2_a stays zero."""
+    the components reshaped over the kron input blocks; w2_a stays zero. Returns None
+    when initialised, else why it could not be."""
+    rows = _lokr_rows(lyco)
+    if comp.shape[0] < rows:
+        return (
+            f"needs {rows} component rows, {comp.shape[0]} available "
+            f"(COMPONENT_CAP={COMPONENT_CAP}): lower ALGO_KWARGS['factor'] or DIM"
+        )
     w1 = lyco.lokr_w1 if lyco.use_w1 else lyco.lokr_w1_a @ lyco.lokr_w1_b
     m1, n1 = w1.shape
     r2, n2 = lyco.lokr_w2_b.shape
-    rows = m1 * r2
-    if comp.shape[0] < rows:
-        return
     v = comp[:rows].reshape(rows, n1, n2).float()
     gram = torch.einsum("rbi,rbj->ij", v, v)
     _, vecs = torch.linalg.eigh(gram)
     top = vecs[:, -r2:].T.flip(0)
     lyco.lokr_w2_b.copy_(top.to(lyco.lokr_w2_b))
     lyco.lokr_w2_a.zero_()
+    return None
 
 
-def _init_from(t, comp: Tensor) -> None:
+def _init_from(t, comp: Tensor) -> str | None:
+    """The layer's input-side factor from its activation subspace. Returns None when
+    initialised, else why the layer kept its random init."""
     lyco = t.lyco
     if hasattr(lyco, "lora_down"):
-        _init_lora(lyco, comp)
-    elif hasattr(lyco, "lokr_w2_b") and not lyco.use_w2:
-        _init_lokr(lyco, comp)
+        return _init_lora(lyco, comp)
+    if hasattr(lyco, "lokr_w2_b") and not lyco.use_w2:
+        return _init_lokr(lyco, comp)
+    return "a full-matrix w2 has no rank for the core"
 
 
 def _broadcast(aset) -> None:
@@ -116,7 +136,9 @@ def calibrate(k: dict, built, step, loader, device, autocast) -> None:
     if not targets:
         log.warning("EVA: no eva-capable target layer; keeping the random init")
         return
-    with timed(log, f"EVA calibration ({len(targets)} layers, <= {cfg['batches']} batches)"):
+    with timed(
+        log, f"EVA calibration ({len(targets)} layers, <= {cfg['batches']} batches)"
+    ):
         batches = fixed_batches(
             loader, build_batcher(k, built, device), int(cfg["batches"])
         )
@@ -163,14 +185,18 @@ def calibrate(k: dict, built, step, loader, device, autocast) -> None:
                     handle.remove()
             if len(converged) == len(hooks) and used >= int(cfg["min_batches"]):
                 break
-        fitted = 0
+        fitted, skipped = 0, []
         with torch.no_grad():
             for t in targets:
                 source = hooks.get(aliases.get(t.path, t.path))
                 if source is None or not hasattr(source[1].svd, "components_"):
+                    skipped.append(f"{t.path}: no activation SVD fitted")
                     continue
-                _init_from(t, source[1].svd.components_.float())
-                fitted += 1
+                why = _init_from(t, source[1].svd.components_.float())
+                if why is None:
+                    fitted += 1
+                else:
+                    skipped.append(f"{t.path}: {why}")
         for _, _, handle in hooks.values():
             handle.remove()
         _broadcast(aset)
@@ -179,3 +205,7 @@ def calibrate(k: dict, built, step, loader, device, autocast) -> None:
         f"({used} batches, {len(converged)}/{len(hooks)} converged, "
         f"{len(aliases)} shared-input aliases)"
     )
+    if skipped:
+        shown = "; ".join(skipped[:4])
+        more = f" (and {len(skipped) - 4} more)" if len(skipped) > 4 else ""
+        log.warning(f"EVA: {len(skipped)} layers kept their random init: {shown}{more}")

@@ -54,7 +54,10 @@ batches; training continues after them.
   has no rank for this and keeps random init.
 
 Component count per layer: DIM for LoRA shapes, m1 r2 for LoKr (capped at 512 so one
-layer's component matrix stays small next to the model).
+layer's component matrix stays small next to the model). A LoKr layout whose m1 r2
+exceeds the cap cannot be initialised — that layer keeps its random init, and the
+calibration logs a warning naming it and the fix (`lower ALGO_KWARGS['factor'] or
+DIM`), so a run never assumes an init it did not get.
 
 ## Scope
 
