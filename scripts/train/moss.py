@@ -99,7 +99,7 @@ DORA_DETACH = False  # True detaches the DoRA weight norm in training (the DoRA 
 NARA = False  # True conditions the lora / loha / lokr delta on the noise level (the NARA switch; see docs/internals/adapter-nara.md)
 SORA_POST_ORTHO = 0  # SORA rotation of the layer output: {"rank": 1, "initial_s_p": 1.0} (or a bare rank / True); stacks with DoRA (docs/internals/adapter-sora.md)
 SORA_PRE_DIAG = False  # SORA learned base-output channel scale, replaces DoRA (mutually exclusive with DORA)
-EVA = None  # activation-SVD init of the input factors on a fresh run: {} = defaults, {"batches": 32, "min_batches": 4, "sim_thresh": 0.99} (docs/internals/adapter-eva.md)
+EVA = None  # activation-SVD init of the input factors on a fresh run: {} = defaults, {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp64" | "fp32"} ("fp32" ~9x faster, inside the SVD's own seed noise; docs/internals/adapter-eva.md)
 DROPOUT = {"input": 0.0, "rank": 0.0, "module": 0.0}
 ADAPTER_MODE = "bypass"  # "bypass" | "merge"
 LORAPLUS_RATIO = 1.0  # lr ratio of up / down factors (LoRA+); 1.0 = off

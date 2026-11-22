@@ -133,9 +133,16 @@ class AdapterConfig:
         if self.eva is not None:
             if rec is None or not rec.supports_eva:
                 problems.append(f"EVA does not apply to ALGO={self.algo!r}")
-            unknown = sorted(set(self.eva) - {"batches", "min_batches", "sim_thresh"})
+            unknown = sorted(
+                set(self.eva) - {"batches", "min_batches", "sim_thresh", "precision"}
+            )
             if unknown:
                 problems.append(f"EVA has unknown keys {unknown}")
+            precision = self.eva.get("precision", "fp64")
+            if precision not in ("fp64", "fp32"):
+                problems.append(
+                    f"EVA['precision']={precision!r} not in ('fp64', 'fp32')"
+                )
             if self.module_dropout > 0:
                 problems.append(
                     "EVA calibration needs every layer's activations; "

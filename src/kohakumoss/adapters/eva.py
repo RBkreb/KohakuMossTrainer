@@ -15,22 +15,54 @@ from kohakumoss.training.build.loop import build_batcher, fixed_batches
 
 log = get_logger(__name__)
 
-DEFAULTS = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99}
+DEFAULTS = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp64"}
 EVA_KEYS = frozenset(DEFAULTS)
+PRECISIONS = ("fp64", "fp32")
+
+
+class _Fp32Svd:
+    """`torch.svd_lowrank` on an fp32 copy of its input, same q / niter as the package.
+
+    `torch-incremental-pca` feeds `partial_fit`'s fp64 `vstack` straight into
+    `svd_lowrank`, whose QR and GEMMs then run in fp64 (no tensor cores on consumer
+    cards: 1/32 to 1/64 of fp32 throughput). This is the one hop that decides the
+    dtype of the expensive part, and it is an instance attribute, so overriding it
+    needs no copy of the package's `partial_fit`.
+
+    `svd_lowrank` is randomized, so the subspace already varies run to run: with a
+    fixed seed the fp32 and fp64 subspaces differ by a gap of 0.10 in the worst
+    principal angle while two fp64 runs at different seeds differ by 0.92-0.98 (a
+    4352x3072 layer, n=128). The precision difference is inside the method's own
+    randomness; EVA="precision": "fp32" trades it for 9x on the calibration."""
+
+    def __init__(self, q: int, niter: int):
+        self.q = q
+        self.niter = niter
+
+    def __call__(self, x: Tensor):
+        u, s, v = torch.svd_lowrank(x.float(), q=self.q, niter=self.niter)
+        return u, s, v.mH
 
 
 class SVDHook:
     """One layer's incremental input SVD; a component counts as converged when its
     cosine similarity across two consecutive fits reaches the threshold."""
 
-    def __init__(self, n_components: int, sim_thresh: float):
+    def __init__(self, n_components: int, sim_thresh: float, precision: str = "fp64"):
+        if precision not in PRECISIONS:
+            raise ValueError(f"EVA precision {precision!r} not in {PRECISIONS}")
         self.n_components = n_components
+        q = 2 * n_components
         self.svd = IncrementalPCA(
             n_components=n_components,
             copy=True,
             lowrank=True,
-            lowrank_q=2 * n_components,
+            lowrank_q=q,
         )
+        if precision == "fp32":
+            # The package's own default `lowrank_niter`; a different value would change
+            # the subspace for reasons unrelated to precision.
+            self.svd.svd_fn = _Fp32Svd(q, niter=4)
         self.sim_thresh = sim_thresh
         self.converged = torch.zeros(n_components, dtype=torch.bool)
 
@@ -166,7 +198,9 @@ def calibrate(k: dict, built, step, loader, device, autocast) -> None:
                 aliases[t.path] = canonical[fp]
                 continue
             canonical[fp] = t.path
-            hook = SVDHook(_components(t), float(cfg["sim_thresh"]))
+            hook = SVDHook(
+                _components(t), float(cfg["sim_thresh"]), str(cfg["precision"])
+            )
             handle = t.linear.register_forward_pre_hook(hook)
             hooks[t.path] = (t, hook, handle)
         converged, used = set(), 0

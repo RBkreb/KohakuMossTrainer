@@ -9,13 +9,45 @@ only the first gradient's alignment changes. No loss, optimizer or per-step chan
 ## Knob
 
 ```python
-EVA = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99}  # {} = these defaults
+EVA = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp64"}
+# {} = these defaults
 ```
 
 `EVA` present (and not False) runs the calibration on a fresh run; `RESUME` and
 `INIT_FROM` skip it (the state already carries trained factors). `batches` caps the
 calibration forwards, `min_batches` floors them, `sim_thresh` is the per-component
 cosine similarity between consecutive incremental SVDs that counts as converged.
+
+### `precision`: the calibration's speed / precision trade
+
+`torch-incremental-pca` accumulates its statistics in fp64 and hands `partial_fit`'s
+fp64 `vstack` straight to `torch.svd_lowrank`, so the QR and GEMMs of every fit run in
+fp64 — 1/32 to 1/64 of fp32 throughput on consumer cards, with no tensor cores.
+
+| `precision` | what runs | cost | when |
+| --- | --- | --- | --- |
+| `"fp64"` (default) | the package as shipped | the time | the default; no behaviour change |
+| `"fp32"` | `svd_lowrank` on an fp32 copy | ~9x faster | long calibrations you want to shorten |
+
+Measured on a 4352x3072 layer at `n_components=128`, `lowrank_q=256`: **305 ms per fit
+(fp64) vs 31 ms (fp32)**. EVA's cost is `MAX_TOKENS x batches x distinct hooks`, so it
+does **not** depend on the dataset size or the step count: 252 layers x 32 batches at
+12288 tokens is ~111 min in fp64 and ~12 min in fp32. Lowering `batches` is the other
+lever (it reduces how well the components converge).
+
+What fp32 costs in accuracy is bounded by the method's own randomness. `svd_lowrank`
+is randomized — two calls on the same input disagree (min cosine -0.92) — so the
+comparison has to fix the seed:
+
+| comparison (same data, seed fixed) | subspace gap (1 - min principal-angle cosine) |
+| --- | --- |
+| fp64 run vs itself | 8e-16 |
+| two fp64 runs, different seeds | 0.92 - 0.98 |
+| fp64 vs fp32, same seed | **0.10** |
+
+The precision difference is ~10x smaller than the run-to-run spread EVA already has,
+so `"fp32"` changes which random draw you get, not the quality of the draw. It is still
+an opt-in: the default stays `"fp64"` so a run reproduces the documented behaviour.
 ALGO must be eva-capable (`Kind.supports_eva`: LoRA / LoCon, LoKr, and their NaRA
 variants); module dropout must be 0 (every layer must produce activations).
 

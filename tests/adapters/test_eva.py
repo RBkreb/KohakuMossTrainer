@@ -101,3 +101,36 @@ def test_eva_refuses_incapable_kind_and_dropout():
     cfg = AdapterConfig(algo="lora", preset="attn", dim=4, eva={}, module_dropout=0.1)
     assert any("activations" in p for p in cfg.validate())
     assert AdapterConfig(algo="lora", preset="attn", dim=4).validate() == []
+
+
+def test_eva_precision_switch():
+    """`precision` picks the dtype of the incremental SVD: fp64 as the package ships,
+    fp32 the fast path. The fp32 run must reach the same planted subspace."""
+    for value in ("fp64", "fp32"):
+        cfg = AdapterConfig(algo="lora", preset="attn", dim=4, eva={"precision": value})
+        assert cfg.validate() == []
+    bad = AdapterConfig(algo="lora", preset="attn", dim=4, eva={"precision": "fp16"})
+    assert any("not in ('fp64', 'fp32')" in p for p in bad.validate())
+
+    torch.manual_seed(11)
+    d, r = 64, 4
+    basis = torch.linalg.qr(torch.randn(d, r))[0]
+    batches = []
+    for _ in range(12):
+        coeffs = torch.randn(256, r) * torch.tensor([8.0, 4.0, 2.0, 1.0])
+        batches.append(coeffs @ basis.T + 0.01 * torch.randn(256, d))
+
+    subspaces = {}
+    for prec in ("fp64", "fp32"):
+        hook = SVDHook(r, 0.99, prec)
+        for x in batches:
+            hook(torch.nn.Linear(d, d), (x,))
+        subspaces[prec] = hook.svd.components_.float()
+        assert bool(hook.converged.all())
+    # both find the planted subspace; compare column-wise after matching the sign
+    for prec, comp in subspaces.items():
+        s = torch.linalg.svdvals(comp @ basis)
+        assert (s - 1).abs().max().item() < 1e-2, prec
+
+    with pytest.raises(ValueError, match="not in"):
+        SVDHook(r, 0.99, "fp16")
