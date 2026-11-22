@@ -24,6 +24,19 @@ def module_bypass(layer, lyco, multiplier: float) -> Callable:
     return forward
 
 
+def module_bypass_split(layer, lyco, multiplier: float) -> Callable:
+    """x -> (base(x), the bypass delta): the two halves `module_bypass` adds, kept
+    apart for a conditioner that needs the base on its own (SORA Pre-Diag scales it).
+    One delta per forward, exactly as `module_bypass`; the pair costs the same two
+    tensors the sum did."""
+
+    def forward(x: Tensor) -> tuple[Tensor, Tensor]:
+        lin = layer()
+        return lin._impl(lin, x), lyco.bypass_forward_diff(x, multiplier).to(x.dtype)
+
+    return forward
+
+
 def module_rotation(lyco, multiplier: float) -> Callable:
     """x -> the LyCORIS module's bypass forward: a rotation of the base output, which
     the module computes through its own `org_forward` (one base forward)."""

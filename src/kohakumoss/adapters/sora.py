@@ -5,6 +5,7 @@ output that replaces DoRA. Parameters live on the LyCORIS module, so checkpoints
 parameter groups carry them; the export delta builders fold them into dW exactly."""
 
 import math
+from collections.abc import Callable
 
 import torch
 from torch import Tensor, nn
@@ -103,13 +104,50 @@ def post_ortho(fn, lyco, m: float):
 
 def pre_diag(fn, lyco, m: float):
     """x -> d_m fn(x) + (1 - d_m) delta_m(x), d_m = 1 + m (d - 1): exactly
-    base + m ((d - 1) base + delta) at every strength, one extra low-rank delta."""
+    base + m ((d - 1) base + delta) at every strength, one extra low-rank delta.
+
+    `fn` returns base + delta, so this asks the module for the delta a second time:
+    under NaRA that is a second hypernetwork forward plus two extra linear layers
+    (the core is not cached and is not cacheable under checkpointing). Kept as the
+    fallback for bindings whose base cannot be read on its own; the eager bypass
+    route uses `pre_diag_split` instead."""
 
     def forward(x: Tensor) -> Tensor:
         y = fn(x)
         delta = lyco.bypass_forward_diff(x, m).to(F32)
         dm = 1.0 + m * (lyco.sora_diag.to(F32) - 1.0)
         return (dm * y.to(F32) + (1.0 - dm) * delta).to(y.dtype)
+
+    return forward
+
+
+def pre_diag_split(fn, lyco, m: float):
+    """Same map as `pre_diag`, from a `fn` that yields (base, delta) instead of their
+    sum: one delta per forward, the base it already had.
+
+    Algebra: `pre_diag` computes `d_m (base + delta_m) + (1 - d_m) delta_m`, which is
+    `d_m base + delta_m` -- the `(1 - d_m)` term cancels against the delta folded into
+    `fn`'s sum. That is `base + m ((d - 1) base + delta)`, the paper's form, so this
+    adds the base and the delta separately instead of re-deriving the delta."""
+
+    def forward(x: Tensor) -> Tensor:
+        base, delta = fn(x)
+        dm = 1.0 + m * (lyco.sora_diag.to(F32) - 1.0)
+        return (dm * base.to(F32) + delta.to(F32)).to(base.dtype)
+
+    return forward
+
+
+def pre_diag_base(fn, lyco, m: float, base: Callable[[Tensor], Tensor]):
+    """x -> fn(x) + m (d - 1) base(x): the same map again, written so the sum `fn`
+    returns is left intact and the delta is never read. `base` is one extra base
+    GEMM, which under NaRA is far cheaper than a second delta (a hypernetwork
+    forward, two linear layers and a batched matmul)."""
+
+    def forward(x: Tensor) -> Tensor:
+        y = fn(x)
+        k = m * (lyco.sora_diag.to(F32) - 1.0)
+        return (y.to(F32) + k * base(x).to(F32)).to(y.dtype)
 
     return forward
 

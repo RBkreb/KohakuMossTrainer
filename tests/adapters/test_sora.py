@@ -213,6 +213,118 @@ def test_pre_diag_refuses_dora_and_dropout():
         apply(Net(), config(algo="ia3", sora_post_rank=1))
 
 
+def _counted(lyco) -> list:
+    """Wrap `bypass_forward_diff` with a call counter (same behaviour)."""
+    calls = []
+    original = lyco.bypass_forward_diff
+
+    def counted(*a, **kw):
+        calls.append(1)
+        return original(*a, **kw)
+
+    lyco.bypass_forward_diff = counted
+    return calls
+
+
+def test_pre_diag_forms_agree_on_eager_bindings():
+    """The three Pre-Diag forms compute the same map, and `legacy` reads the delta
+    twice where `split` / `base` read it once."""
+    import os
+
+    from kohakumoss.adapters import sora as sora_mod
+
+    lyco = _bare_lyco()
+    x = torch.randn(5, 16, D)
+    outs, deltas = {}, {}
+    for mode, build in (
+        ("legacy", sora_mod.pre_diag),
+        ("split", sora_mod.pre_diag_split),
+        ("base", sora_mod.pre_diag_base),
+    ):
+        calls = _counted(lyco)
+        if mode == "split":
+            fn = build(lambda xx: (lyco.base_forward(xx), lyco.bypass_forward_diff(xx, 1.0)), lyco, 1.0)
+        elif mode == "base":
+            fn = build(lambda xx: lyco.base_forward(xx) + lyco.bypass_forward_diff(xx, 1.0),
+                       lyco, 1.0, lyco.base_forward)
+        else:
+            fn = build(lambda xx: lyco.base_forward(xx) + lyco.bypass_forward_diff(xx, 1.0), lyco, 1.0)
+        with torch.no_grad():
+            outs[mode] = fn(x).clone()
+        deltas[mode] = len(calls)
+
+    ref = outs["legacy"]
+    scale = ref.abs().max().item()
+    for mode in ("split", "base"):
+        rel = (outs[mode] - ref).abs().max().item() / scale
+        assert rel < 1e-5, f"{mode} disagrees with legacy by {rel}"
+    assert deltas == {"legacy": 2, "split": 1, "base": 1}, deltas
+
+
+def test_pre_diag_skips_the_kernel_op_so_the_delta_is_computed_once():
+    """A LoRA layer has kernel ops that compute the delta themselves; Pre-Diag needs
+    that same delta again, so WITH `split` the layer must not take the kernel route --
+    otherwise the forward computes two deltas (measured 2.26x a plain LoRA forward on
+    the 3090, against 1.75x when split takes over).
+
+    The kernel's delta is invisible to `bypass_forward_diff`, so it cannot be counted
+    from outside; this asserts the installed ROUTE (which wrapper bound the layer) and
+    that the output is unchanged."""
+    import os
+
+    wrappers, outs = {}, {}
+    previous = os.environ.get("KOHAKUMOSS_PREDIAG")
+    try:
+        for mode in ("legacy", "split"):
+            os.environ["KOHAKUMOSS_PREDIAG"] = mode
+            model, x, aset = prepared(config(sora_pre_diag=True))
+            wrappers[mode] = {
+                t.linear.forward.__qualname__ for t in aset.targets
+            }
+            with torch.no_grad():
+                outs[mode] = model(x).clone()
+            # one delta per layer through the module either way (the kernel's own
+            # application is not this call)
+            counted = [_counted(t.lyco) for t in aset.targets]
+            with torch.no_grad():
+                model(x)
+            assert max(len(c) for c in counted) == 1, mode
+            aset.remove()
+    finally:
+        if previous is None:
+            os.environ.pop("KOHAKUMOSS_PREDIAG", None)
+        else:
+            os.environ["KOHAKUMOSS_PREDIAG"] = previous
+
+    rel = (outs["split"] - outs["legacy"]).abs().max().item() / outs["legacy"].abs().max().item()
+    assert rel < 1e-5, f"split disagrees with legacy by {rel}"
+
+    assert wrappers["legacy"] == {"pre_diag.<locals>.forward"}, wrappers["legacy"]
+    assert wrappers["split"] == {"pre_diag_split.<locals>.forward"}, wrappers["split"]
+
+
+class _Bare:
+    """Just enough module for the Pre-Diag wrappers: a base and a delta."""
+
+    def __init__(self):
+        self.w = torch.randn(D, D) / D**0.5
+        self.bias = torch.zeros(D)
+        self.A = torch.randn(4, D) * 0.05
+        self.B = torch.randn(D, 4) * 0.05
+        self.sora_diag = nn.Parameter(torch.empty(D).uniform_(0.7, 1.3))
+
+    def base_forward(self, x):
+        return F.linear(x, self.w, self.bias)
+
+    def bypass_forward_diff(self, x, scale=1.0):
+        return F.linear(F.linear(x, self.A), self.B) * scale
+
+
+def _bare_lyco() -> _Bare:
+    torch.manual_seed(7)
+    return _Bare()
+
+
 def folded_export(rows, **kw) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """(folded output, s, unfolded reload's output) of one layer trained on the base
     folded by `rows`: the lycoris export carries the fold, so the reload on the unfolded

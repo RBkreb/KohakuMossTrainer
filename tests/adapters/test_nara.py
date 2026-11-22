@@ -82,6 +82,53 @@ def perturb(aset, seed: int = 3) -> None:
             p.add_(torch.randn(p.shape, generator=g).to(p) * 0.3)
 
 
+def test_pre_diag_evals_delta_once_on_nara():
+    """NaRA is the route that paid Pre-Diag's second delta: its kind has no kernel
+    bypass, so the bound forward is the eager `module_bypass`, and `legacy` then asks
+    the module for the delta again -- a second hypernetwork forward per layer. The
+    `split` binding must (a) agree with `legacy` and (b) call the delta once.
+
+    One adapter set is re-bound per strategy, so both runs share the exact weights."""
+    import os
+
+    sigma, seq = layout()
+    set_context(sigma, seq)
+    w, b, x = problem()
+    aset = adapted(dense_linear(w, b), sora_pre_diag=True)
+    perturb(aset)
+    lyco = aset.targets[0].lyco
+    outs, deltas = {}, {}
+    previous = os.environ.get("KOHAKUMOSS_PREDIAG")
+    try:
+        for mode in ("legacy", "split"):
+            os.environ["KOHAKUMOSS_PREDIAG"] = mode
+            aset.bind()
+            calls = []
+            original = lyco.bypass_forward_diff
+
+            def counted(*a, _orig=original, _calls=calls, **kw):
+                _calls.append(1)
+                return _orig(*a, **kw)
+
+            with torch.no_grad():
+                lyco.bypass_forward_diff = counted
+                outs[mode] = aset.targets[0].linear(x).clone()
+            deltas[mode] = len(calls)
+            del lyco.bypass_forward_diff
+    finally:
+        if previous is None:
+            os.environ.pop("KOHAKUMOSS_PREDIAG", None)
+        else:
+            os.environ["KOHAKUMOSS_PREDIAG"] = previous
+        aset.remove()
+
+    scale = outs["legacy"].abs().max().item()
+    rel = (outs["split"] - outs["legacy"]).abs().max().item() / scale
+    assert rel < 1e-5, f"split disagrees with legacy by {rel}"
+    assert deltas["legacy"] == 2, deltas
+    assert deltas["split"] == 1, deltas
+
+
 def ref_hyper(hyper: NaraHyper, sigma: torch.Tensor, dtype) -> torch.Tensor:
     """Independent C(sigma) of the hypernetwork's tensors, in `dtype`."""
     s = sigma.to(dtype).reshape(-1, 1)
