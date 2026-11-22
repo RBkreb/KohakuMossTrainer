@@ -41,6 +41,7 @@
 - **`SORA_PRE_DIAG`**（Pre-Diag）：base 输出的逐输出通道可学习缩放，
   DoRA 的廉价替代。**与 `DORA` 互斥**
 - **`SORA_POST_ORTHO`**（Post-Ortho）：对 整个输出施加近正交旋转，由低秩斜对称矩阵的一阶 Taylor 展开构成，参数极省。可与 DoRA 叠加。
+- **导出精度**：`sora_diag` 的偏离量通常只有 ~1e-3 量级，bf16 有 83% 的值退化。要保证 Pre-Diag 质量请导出 **fp32**。
 
 `Pre-Diag+Post-Ortho=SORA`
 

@@ -43,7 +43,7 @@ Can be enabled separately or together:
 - **`SORA_POST_ORTHO`** (Post-Ortho): a near-orthogonal rotation applied to the whole
   output, built from the first-order Taylor expansion of a low-rank skew-symmetric
   matrix, and therefore very cheap in parameters. Stacks with DoRA.
-
+- **Export precision**: The deviation of `sora_diag` is usually only on the order of ~1e-3, and 83% of the values degrade with bf16. To ensure Pre-Diag quality, please export as **fp32**.
 `Pre-Diag + Post-Ortho = SORA`
 
 ```
