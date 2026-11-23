@@ -237,7 +237,8 @@ EVA 更改训练起步初始值。
 
 ## 样例
 
-[DoRA+NaRA样例](https://huggingface.co/RBXLSP/TextureLux-DoRAN)
+[DoRA+NaRA](https://huggingface.co/RBXLSP/TextureLux-DoRAN)
+[Pre-diag](https://huggingface.co/RBXLSP/RigidFrontier-SORA)
 
 ## 引用
 
