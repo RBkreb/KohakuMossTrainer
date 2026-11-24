@@ -40,6 +40,7 @@ from kohakumoss.training.optim.optimizers.kwargs import optimizer_problems
 from kohakumoss.training.optim.outlier import outlier_problems
 from kohakumoss.training.optim.outlier import spec_of as outlier_spec
 from kohakumoss.training.quality import option_problems as quality_problems
+from kohakumoss.training.rank_check import option_problems as rank_check_problems
 from kohakumoss.training.stream_loss import spec_of as stream_spec
 from kohakumoss.training.stream_loss import stream_loss_problems
 from kohakumoss.types.arch import PRESETS
@@ -85,7 +86,7 @@ KNOWN = frozenset(
     LOG_EVERY METRICS_EVERY PROGRESS SAMPLE_PROMPTS SAMPLE_EVERY SAMPLE_STEPS SAMPLE_CFG SAMPLE_SHIFT
     SAMPLE_SKIP_LAYERS SAMPLE_SIZE SAMPLE_SEEDS VALIDATE_EVERY VALIDATION SAVE_EVERY
     SAVE_MINUTES KEEP_LAST FINAL_CHECKPOINT RESUME EXPORT_FORMATS SAVE_FORMAT SAVE_MERGED SAVE_FUSED_QKV
-    CHECKPOINT_EXPORT QUALITY_CHECK WEIGHTING OPTIMIZER_KWARGS
+    CHECKPOINT_EXPORT QUALITY_CHECK RANK_CHECK WEIGHTING OPTIMIZER_KWARGS
     SAMPLE_NEGATIVE PROJECT LORAPLUS_RATIO BATCHING OVERLONG MAX_SAMPLES TOKEN_BUDGET
     CROP PLANNER_KWARGS LATENT_ENCODER_ID LATENT_DRAW
     TEXT_ENCODER_ID BACKGROUND RESAMPLE TEXT_CHARS_PER_TOKEN TEXT_OVERHEAD_TOKENS
@@ -287,6 +288,7 @@ def validate(k: dict) -> list[str]:
     p += optimizer_problems(k)
     p += io_problems(k)
     p += quality_problems(k)
+    p += rank_check_problems(k)
     p += stream_loss_problems(k)
     p += step_sync_problems(k)
     p += wd_target_problems(k, is_full(k))

@@ -139,6 +139,19 @@ SVIR（奇异值侵入比）与 EK（超额峰度）：谱能量集中 → 中/�
 0.3 秒，纯 CPU。阈值在 SDXL / FLUX / Kolors 社区 LoRA 上标定，MOSS 上建议看同一
 run 内的跨 checkpoint 趋势，细节见 [docs/internals/quality.md](docs/internals/quality.md)。
 
+秩谱审计（`RANK_CHECK`，可选外部工具）：
+
+```python
+RANK_CHECK = {"step": 10}   # 或 True；{"step","layers","keep","timeout"}
+```
+
+第 N 步把当前 LoRA 因子写成临时 safetensors，调用 `loraspectra` 审计并写入
+`<output>/rank_check.json`（逐层稳定秩 / 熵有效秩 / k99 能量秩 / MP 噪声秩 / 状态，
+以及相对 `DIM` 的利用率）。工具通过 `$LORASPECTRA` 或 PATH 查找，未安装时只打一条
+warning 跳过（`cargo install loraspectra`）；仅支持 `PARALLEL="none"` 与 LoRA 类因子。
+注意它衡量的是早期 delta 的秩利用率，梯度谱（G0）判秩见
+[docs/internals/rank-check.md](docs/internals/rank-check.md)。
+
 ## 详细参数
 ### NaRA 超网络参数（`ALGO_KWARGS`）
 

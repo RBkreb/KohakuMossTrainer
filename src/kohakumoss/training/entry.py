@@ -88,6 +88,7 @@ from kohakumoss.training.layouts import Layout, layout_of
 from kohakumoss.training.memory.optimizers import close_memory
 from kohakumoss.training.quality import (
     after_save_quality,
+    capture_baseline,
     chain_after_save,
     final_quality,
 )
@@ -399,6 +400,8 @@ def worker(
     loader, batcher = _inputs(k, built, device, loader, writer)
     if k.get("EVA") not in (None, False) and not resumed and not inited:
         eva.calibrate(k, built, step, loader, device, autocast)
+    if is_main and not resumed:
+        capture_baseline(k, built.trainable, output_dir)
     # After the EVA init: the EMA copies its masters from the live parameters.
     ema = build_ema_for(k, built, bundle, names, rank)
     timeline = build_timeline(device)

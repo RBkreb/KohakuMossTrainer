@@ -278,6 +278,7 @@ SAVE_MERGED = False  # adapters: also the merged DiT in SAVE_FORMAT (ComfyUI sin
 SAVE_FUSED_QKV = False  # comfy files: False (separate q / k / v keys) | True (joint q/k/v as one proj.qkv) | "auto" (as the DiT file stores them; the Comfy-Org files are fused)
 CHECKPOINT_EXPORT = True  # also write the exports into every checkpoint's export/ (their size is logged at build)
 QUALITY_CHECK = False  # static SVIR+EK inspection of each saved Wdown set -> <output>/quality.jsonl: False | True | {"tau": 3.0, "tau_low_rank": 3.5, "ema": False, "top": 5}
+RANK_CHECK = False  # one-shot loraspectra audit at step N -> <output>/rank_check.json (optional CLI: cargo install loraspectra): False | True | {"step": 10, "layers": True, "keep": False, "timeout": 300.0}
 EXPORT_FORMATS = None  # None | the older spelling: ("comfy" | "lycoris" | "merged" | "diffusers", ...) -> SAVE_FORMAT / SAVE_MERGED
 
 

@@ -57,6 +57,7 @@ from kohakumoss.training.memory.optimizers import build_memory_optim
 from kohakumoss.training.optim.bundle.deferred import sync_cadence
 from kohakumoss.training.optim.bundle.nonfinite import param_names
 from kohakumoss.training.optim.outlier import attach_outlier_decay, start_refs
+from kohakumoss.training.rank_check import RankCheck
 from kohakumoss.training.step import (
     DeviceBatcher,
     OnlineLatents,
@@ -503,6 +504,8 @@ def build_callbacks(
                 k["SAVE_MINUTES"], checkpoints, parts, every=k["LOG_EVERY"], **agree
             )
         )
+    if k.get("RANK_CHECK"):
+        cbs.append(RankCheck(k, parts, output_dir, is_main))
     return CallbackRunner(cbs, last=k["STEPS"])
 
 

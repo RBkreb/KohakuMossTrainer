@@ -65,6 +65,31 @@ Options: `QUALITY_CHECK = True` uses the defaults below; a dict overrides single
 | `tau_low_rank` | 3.5 | the factor for `rank <= 4` |
 | `ema` | False | also inspect the EMA weights |
 | `top` | 5 | worst layers by EK in each row (0 = none) |
+| `baseline` | "auto" | baseline-relative watch: `true` / `false` / `"auto"` (on under EVA) |
+
+## Baseline-relative watch (EVA init)
+
+The paper's thresholds presume a Gaussian random init: EK starts at ~0 and any
+dominant singular direction is an "intrusion". EVA breaks that premise: the down
+factor starts as the activation's orthonormal principal components, whose entries
+are non-Gaussian (EK can start positive -> a step-0 `ek` false alarm), and spectral
+growth along those data directions is expected signal rather than memorisation.
+
+With `baseline` on, the entry measures every `Wdown` layer once at the run's true
+starting point (after EVA / `INIT_FROM`, before training and the EMA copy) and
+writes `<output>/quality_baseline.json` (per-layer `ek` / `svir` / `intrusions` /
+`r_eff` plus the tau pair). Reports then carry, for layers matched by name:
+
+- `svir_delta` / `ek_delta` per layer (also in `top`, which sorts by `ek_delta`);
+- `svir_mean_delta`, `ek_median_delta`, `baseline_layers` in the summary;
+- `watch` fires on the deltas: mean SVIR delta > 0.05, median EK delta > 0.
+
+Absolute values stay in every row, so the paper's bands remain readable. The EMA
+source compares against the same baseline (its masters are copied from the init
+weights). Limits: capture needs `PARALLEL = "none"` (rank 0 holds the full
+factors); a resumed run reads the original file and falls back to absolute
+thresholds with a warning when it is missing or its tau differs; a delta measures
+drift in intrusion count / kurtosis, not a spectrum-preserving subspace rotation.
 
 ## Scope
 
