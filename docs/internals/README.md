@@ -21,4 +21,5 @@ does on the device. Start from the [concepts](../concepts/README.md) and
 | | [adapter-nara.md](adapter-nara.md) | NaRA: the shared noise-conditioned hypernetwork, its context, state and exports |
 | | [adapter-sora.md](adapter-sora.md) | SORA: Post-Ortho rotation and Pre-Diag base scale, their forwards, exports and cost |
 | | [adapter-eva.md](adapter-eva.md) | EVA: activation-SVD calibration and input-factor initialisation |
+| training | [blockskip.md](blockskip.md) | DiT-BlockSkip: dynamic patch sampling, block skipping with precomputed residual features, the two-stage alignment contract, measured gain and quality warning |
 | multi-GPU | [distributed-launch.md](distributed-launch.md) | process launch, store and backends (multi-GPU training is Linux-only; the CPU gloo self-checks also run on Windows) |

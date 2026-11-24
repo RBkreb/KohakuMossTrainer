@@ -393,7 +393,12 @@ def data_knobs(k: dict, device: torch.device) -> dict:
     on = torch.device("cpu") if plan.memory == "cpu" else te_device
     plan, _, layout = resolve_text_plan(component_path(k, TEXT), plan, on, device)
     vae_dtype = resolve_vae_dtype(k.get("VAE_DTYPE", "auto"), device)
-    return {**k, **cache_specs(vae_dtype, plan, TEXT_DTYPES[plan.dtype], layout)}
+    kd = {**k, **cache_specs(vae_dtype, plan, TEXT_DTYPES[plan.dtype], layout)}
+    if kd.get("RESOLUTION_MODE") == "patch":
+        from kohakumoss.training.blockskip import sigma_table
+
+        kd["PLANNER_KWARGS"] = {**kd.get("PLANNER_KWARGS", {}), **sigma_table(k)}
+    return kd
 
 
 def sample_texts(k: dict) -> list[str]:

@@ -21,3 +21,4 @@ class DeviceBatch:
     loss_mask: Tensor | None = None
     pixels: list | None = None
     prompts: list[str] | None = None
+    sigma: Tensor | None = None

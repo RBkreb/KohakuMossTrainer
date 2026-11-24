@@ -363,6 +363,9 @@ class MossDataset:
             rank=rank,
             text_limit=[it.text_limit for it in items],
         )
+        sigmas = [it.sigma for it in items]
+        if all(s is not None for s in sigmas):
+            batch.sigma = torch.tensor(sigmas, dtype=torch.float32)
         self._fill_latents(self, batch, items)
         self._fill_text(self, batch, captions)
         return batch

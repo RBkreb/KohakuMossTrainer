@@ -6,6 +6,7 @@ from kohakumoss_data.resolution.bucket import BucketPlanner
 from kohakumoss_data.resolution.geometry import Geometry
 from kohakumoss_data.resolution.keep import keep_indices
 from kohakumoss_data.resolution.overlong import OVERLONG
+from kohakumoss_data.resolution.patch import PatchPlanner
 from kohakumoss_data.resolution.resize import ResizePlanner
 from kohakumoss_data.resolution.square import ShiftedSquarePlanner, SquareCropPlanner
 
@@ -16,6 +17,7 @@ __all__ = [
     "BatchLimits",
     "BucketPlanner",
     "Geometry",
+    "PatchPlanner",
     "ResizePlanner",
     "ShiftedSquarePlanner",
     "SquareCropPlanner",

@@ -46,6 +46,7 @@ class PlanItem:
     text_limit: int = 0
     img_keep: int = 0
     keep_seed: int = 0
+    sigma: float | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class HostBatch:
     text_keys: list[str] = field(default_factory=list)
     text_limit: list[int] = field(default_factory=list)
     layout: object | None = None
+    sigma: Tensor | None = None
 
     def pin(self) -> "HostBatch":
         """Pin every tensor field, every tensor of a list field and the `layout` (its

@@ -46,7 +46,7 @@ TRAIN_TEXT_REFINER = False  # adapters/full FT also on the 2 text-refiner blocks
 DATASETS = (
     []
 )  # [{"source": "kohya" | "folder" | "jsonl" | "parquet" | "webdataset" | "moss_shard", "path": ..., "weight": 1.0, ...}]
-RESOLUTION_MODE = "resize"  # "resize" (native aspect, area ~= TARGET_AREA) | "bucket" | "shifted_square" | "square_crop"
+RESOLUTION_MODE = "resize"  # "resize" (native aspect, area ~= TARGET_AREA) | "bucket" | "shifted_square" | "square_crop" | "patch" (DiT-BlockSkip dynamic patch sampling: PLANNER_KWARGS {"smin": 512, "smax": 1024})
 TARGET_AREA = 1024 * 1024  # pixels
 SIZE_STEP = 16  # pixel multiple (VAE /8 x patchify 2)
 ASPECT_RANGE = (0.25, 4.0)  # min, max width/height
@@ -127,6 +127,12 @@ WEIGHTING = "none"  # "none" | "x0" | "eps"
 #   "write": {"weight": 5e-3, "target": 0.5, "parts": "both", "anneal": 2000, "start": 0}
 #     (relu(share - tau)^2 of each attention / FFN write's top-k share, tau 1 -> target)
 STREAM_LOSS = {}
+# DiT-BlockSkip (arXiv 2603.20755): skip the first n + last m joint blocks, LoRA on the
+# kept middle only. Two runs with the SAME seed / data / STEPS / GRAD_ACC / TIMESTEP:
+#   {"mode": "precompute", "skip": 0.5, "cache": "<dir>"}  (full no-grad forwards, stores features)
+#   {"mode": "train", "skip": 0.5, "cache": "<dir>"}       (PRESET auto-restricted to kept blocks)
+# "skip": ratio of blocks, or an explicit (n, m). Needs PARALLEL="none", no STREAM_LOSS / EVA.
+BLOCKSKIP = {}
 CONCENTRATION_LOSS = {}  # the "concentration" term alone (set one of the two)
 STREAM_LOSS_PROBE = 0  # every N steps: per-term gradient norms + cosines; 0 = off
 HARD_WEIGHT = 1.0  # weight of the data loss

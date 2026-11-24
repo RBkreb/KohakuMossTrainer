@@ -40,7 +40,7 @@ from kohakumoss.parallel.launch import (
 )
 from kohakumoss.parallel.telemetry.report import build_rank_callbacks, rank_layout
 from kohakumoss.precision import autocast_factory, build_precision
-from kohakumoss.training import shutdown
+from kohakumoss.training import blockskip, shutdown
 from kohakumoss.training.build.kernels import (
     adapter_prewarm_devices,
     attach_text_prewarm,
@@ -332,6 +332,13 @@ def worker(
     ranks_meet("data")
     torch.manual_seed(k["SEED"])
     streamed = None if feed is None else loader
+    depth = resolve_config(k["VARIANT"], k["ARCH_OVERRIDES"] or None).depth
+    bs = blockskip.spec(k, depth)
+    if bs is not None and bs.mode == "train":
+        k["PRESET"] = blockskip.restrict_preset(k["PRESET"], bs.n, bs.m, depth)
+        log.info(
+            f"blockskip: LoRA targets restricted to blocks [{bs.n}, {depth - bs.m})"
+        )
     with timed(log, "building model, adapters and encoders"):
         built = build_model(
             k, device, prec, world, loader.dataset.text_tokens_max(), streamed
@@ -372,6 +379,8 @@ def worker(
         forward=hooks.forward,
         recorder=recorder,
     )
+    if bs is not None and bs.mode == "train":
+        blockskip.install_train(bs, built, step, device)
     resumed = resumed_from(k, output_dir) is not None
     bundle, accumulate = build_optim(k, built, device, prec, hooks, keep, resumed)
     if objective is not None:
@@ -443,7 +452,12 @@ def worker(
     log.info(f"training from step {state.step} to {k['STEPS']}")
     try:
         with bars():
-            driver.run(step, loader, bundle, ema, state)
+            if bs is not None and bs.mode == "precompute":
+                blockskip.precompute(
+                    bs, k, built, step, loader, batcher, device, autocast
+                )
+            else:
+                driver.run(step, loader, bundle, ema, state)
         if writer is not None:
             writer.close()
             writer = None

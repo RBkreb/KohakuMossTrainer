@@ -2,7 +2,7 @@
   <a href="./README.md" title="简体中文"><img src="https://img.shields.io/badge/语言-简体中文-blue?logo=googletranslate" alt="简体中文"></a>
 </p>
 
-# KohakuMossTrainer · NaRA / SORA / EVA fork
+# KohakuMossTrainer · NaRA / SORA / EVA / BlockSkip fork
 
 [KohakuBlueleaf/KohakuMossTrainer](https://github.com/KohakuBlueleaf/KohakuMossTrainer)
 
@@ -11,6 +11,7 @@
 | **NaRA** | Noise-aware Rank Adaptation: the low-rank delta varies with the denoising noise level |
 | **SORA** | Skewed Orthogonal Rotation Adaptation: diagonal calibration + near-orthogonal rotation |
 | **EVA** | Explained Variance Adaptation: initialise the input-side factors from activation SVDs |
+| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals, memory / speed-efficient fine-tuning (**lossy** — see the quality warning) |
 
 
 ## What's added
@@ -68,6 +69,38 @@ directions. It raises the starting point of convergence.
 - `ALGO` must support EVA (LoRA / LoCon, LoKr and their NaRA variants);
   `DROPOUT['module']` must be 0.
 
+### DiT-BlockSkip
+
+A reproduction of the [paper](https://arxiv.org/abs/2603.20755); two independently
+usable components:
+
+- **Dynamic patch sampling** (`RESOLUTION_MODE = "patch"`): every sample trains at a
+  fixed low resolution `smin × smin`; the crop side grows linearly with the sample's
+  sigma from `smin` to `smax` (global structure at high noise, fine detail at low
+  noise). The sigma is drawn on the host planner, seeded per occurrence, and carried
+  with the batch.
+- **Block skipping + residual precomputing** (`BLOCKSKIP`): skip the first n + last m
+  joint blocks and train LoRA on the kept middle only. The frozen front is replayed
+  from an exact cached absolute feature; the skipped tail from a cached residual
+  `Δ = f_L − f_{L−m}` added back (paper Eq. 3). The precompute and train stages share
+  one data / sigma / noise stream, with a per-micro-batch sigma equality check. The
+  export is an ordinary subset-of-blocks LoRA: **inference has no extra overhead**.
+
+Measured on this fork's box (3090 + 4060, sft-bf16, batch 1 × grad_acc 4): patch +
+50% skipping runs **3.82×** faster per step than the 1024 LoRA baseline, peak VRAM
+−28%; the net gain including precompute amortises with run length (1.46× at 60 steps,
+≈3.2× at 500). Details: [docs/internals/blockskip.md](docs/internals/blockskip.md).
+
+> ⚠️ **Quality warning: BlockSkip is a lossy approximation, and this fork ran no
+> quality evaluation.** The paper's own subject-fidelity numbers (FLUX, DreamBooth):
+> DINO LoRA 0.7324 → 30% skipping 0.7194 (−1.8%) → 50% skipping **0.6963 (−4.9%)**;
+> CLIP-I 0.8146 → 0.7877 (−3.3%). Skipping without the residual features collapses to
+> DINO ≈ 0.43; skipping the wrong positions (e.g. only the last 50%) ≈ 0.48. This
+> reproduction selects blocks by a proportional split rather than the paper's
+> per-dataset masking sweep, so the loss here may be larger. Only speed / VRAM and
+> mathematical equivalence were verified — **run your own quality comparison before
+> production use.**
+
 ## Usage
 
 ### Training
@@ -102,6 +135,23 @@ EVA = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp32"}
 
 `RESUME` / `INIT_FROM` skip the calibration.
 
+BlockSkip (two stages; identical configs except `BLOCKSKIP['mode']`):
+
+```python
+RESOLUTION_MODE = "patch"                 # dynamic patch sampling (usable on its own)
+PLANNER_KWARGS = {"smin": 512, "smax": 1024}
+
+# stage 1: precompute (full no-grad forwards, features stored per step)
+BLOCKSKIP = {"mode": "precompute", "skip": 0.5, "cache": "path/to/features"}
+SAVE_FORMAT = "none"
+
+# stage 2: train (PRESET auto-restricted to the kept middle blocks)
+BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
+```
+
+Both stages must share `SEED` / `DATASETS` / `STEPS` / `GRAD_ACC` / `TIMESTEP` and the
+resolution settings.
+
 ## Parameters
 
 ### NaRA hypernetwork (`ALGO_KWARGS`)
@@ -134,6 +184,16 @@ small; larger `r_p` has diminishing returns while inference cost rises monotonic
 | `min_batches` | 4 | lower bound on batches |
 | `sim_thresh` | 0.99 | per-component cosine between consecutive incremental SVDs that counts as converged |
 | `precision` | `"fp64"` | `"fp64"` / `"fp32"` |
+
+### BlockSkip parameters
+
+| key | default | meaning |
+| --- | --- | --- |
+| `BLOCKSKIP["mode"]` | `"train"` | `"precompute"` (store features) / `"train"` (block-skip training) |
+| `BLOCKSKIP["skip"]` | `0.5` | skip ratio, or an explicit `(n, m)`; a ratio splits n ≈ 0.6k front / m ≈ 0.4k back |
+| `BLOCKSKIP["cache"]` | required | feature directory (one bf16 file per step) |
+| `PLANNER_KWARGS["smin"]` | 512 | patch training resolution (`RESOLUTION_MODE="patch"`) |
+| `PLANNER_KWARGS["smax"]` | 1024 | crop side at sigma=1 |
 
 ## Inference
 
@@ -199,6 +259,22 @@ RTX 3090, attn 3072×3072 / 12288 tokens, fwd+bwd, bf16, single-layer synthetic 
 
 The rotation (Post-Ortho) is the main cost: it reads and writes the whole
 `[tokens, out]` activation twice.
+
+### Quality and alignment: BlockSkip
+
+- **Lossy and unevaluated here**: see the quality warning above (the paper loses 4.9%
+  DINO at 50% skipping; this fork measured speed / VRAM only).
+- The precompute and train stages must share `SEED` / `DATASETS` / caption / dropout /
+  `STEPS` / `GRAD_ACC` / `TIMESTEP` / resolution settings exactly; every micro-batch
+  checks sigma equality and fails loudly on drift.
+- Refused: `PARALLEL != "none"`, `ALGO = "full"`, `STREAM_LOSS` / `CONCENTRATION_LOSS`,
+  `EVA`.
+- A toml `PRESET` is not auto-restricted: limit its block patterns to the kept range
+  yourself.
+- Feature disk cost: `2 × N_joint × 3072 × 2 B` per step (bf16); ~17 MB per 512²
+  1-sample micro-batch.
+- The `Throughput` TFLOP/s model assumes all blocks run and reads high under skipping;
+  step_time / tokens_per_s / VRAM rows are unaffected.
 
 ### Other
 
@@ -307,6 +383,19 @@ EVA changes the starting values training begins from.
 
 - Paper: https://arxiv.org/abs/2605.29716
 - Repository: https://github.com/generaldi/NaRA
+
+### DiT-BlockSkip — Memory-Efficient Fine-Tuning Diffusion Transformers
+
+```bibtex
+@article{park2026ditblockskip,
+  title   = {Memory-Efficient Fine-Tuning Diffusion Transformers via Dynamic Patch Sampling and Block Skipping},
+  author  = {Park, Sunghyun and Kim, Jeongho and Park, Hyoungwoo and Das, Debasmit and Yun, Sungrack and Hayat, Munawar and Choo, Jaegul and Porikli, Fatih and Choi, Seokeon},
+  journal = {arXiv preprint arXiv:2603.20755},
+  year    = {2026}
+}
+```
+
+- Paper: <https://arxiv.org/abs/2603.20755>
 
 ## License
 

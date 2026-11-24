@@ -179,6 +179,7 @@ class DeviceBatcher:
             loss_mask=self.mask(hb, self.device),
             pixels=hb.pixels,
             prompts=hb.prompts,
+            sigma=None if hb.sigma is None else _move(hb.sigma, self.device),
         )
 
 
@@ -304,7 +305,11 @@ class TrainStep:
         state is left to the caller (pipelines install it per micro-batch)."""
         seq = batch.seq
         z0 = batch.latents.float()
-        sigma = _move(self.sample_sigma(seq.batch, self.sigma_gen, step), self.device)
+        sigma = (
+            batch.sigma
+            if batch.sigma is not None
+            else _move(self.sample_sigma(seq.batch, self.sigma_gen, step), self.device)
+        )
         eps = torch.randn(
             z0.shape, generator=self.noise_gen, device=self.device, dtype=torch.float32
         )
