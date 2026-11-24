@@ -11,7 +11,7 @@
 | **NaRA** | Noise-aware Rank Adaptation：低秩增量随去噪噪声水平变化 |
 | **SORA** | Skewed Orthogonal Rotation Adaptation：对角标定 + 近正交旋转 | 
 | **EVA** | Explained Variance Adaptation：用激活 SVD 初始化输入侧因子 |
-| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，省显存 / 加速微调（**有损**，见质量警示） |
+| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，**有质量损失** |
 
 
 ## 新增内容
@@ -33,7 +33,7 @@
 
   `comfy` / `merged` 在 `export_sigma`（默认 0.5）将核心冻结导出
 
-  *建议使用 lycoris 导出*
+*建议使用 lycoris 导出*
 
 ### SORA
 
@@ -49,7 +49,7 @@
 ```
 W' = R (diag(d) W_pre + s · BA)
 ```
-
+*建议使用 lycoris 导出*
 ### EVA
 ```
 EVA = {
@@ -67,26 +67,14 @@ EVA = {
 
 ### DiT-BlockSkip
 
-[论文](https://arxiv.org/abs/2603.20755)复现：两个可独立开启的组件——
+- **动态 patch 采样** `RESOLUTION_MODE = "patch"` ：所有样本在固定低分辨率
+  `smin × smin` 训练；裁剪边长随该样本的 sigma 从 `smin` 线性增大到 `smax`，sigma 在 host 规划期按种子预采样并随批携带。
+- **跳层 + 残差预计算** `BLOCKSKIP` ：跳过前 n + 后 m 个 joint block。前段特征冻结精确、直接缓存绝对值；后段缓存残差 `Δ = f_L − f_{L−m}`。预计算与训练两阶段共用数据 / sigma / 噪声流，每个 micro-batch 校验 sigma 对齐。
 
-- **动态 patch 采样**（`RESOLUTION_MODE = "patch"`）：所有样本在固定低分辨率
-  `smin × smin` 训练；裁剪边长随该样本的 sigma 从 `smin` 线性增大到 `smax`
-  （高噪声学全局结构、低噪声学细节），sigma 在 host 规划期按种子预采样并随批携带。
-- **跳层 + 残差预计算**（`BLOCKSKIP`）：跳过前 n + 后 m 个 joint block，只训中间
-  block 的 LoRA。前段特征冻结精确、直接缓存绝对值；后段缓存残差 `Δ = f_L − f_{L−m}`
-  加回（论文 Eq. 3）。预计算与训练两阶段共用同一数据 / sigma / 噪声流，逐 micro-batch
-  校验 sigma 对齐。导出是普通的"部分 block LoRA"，**推理无任何额外开销**。
-
-本机实测（3090 + 4060，sft-bf16，batch 1 × grad_acc 4）：patch + 跳层 50% 步时
-**3.82×** 于 1024 LoRA 基线，峰值显存 −28%；含预计算的净增益随步数摊薄
-（60 步 1.46×，500 步约 3.2×）。详见 [docs/internals/blockskip.md](docs/internals/blockskip.md)。
-
-> ⚠️ **质量警示：BlockSkip 是有损近似，且本 fork 未做质量评估。**
-> 原论文（FLUX，DreamBooth）主体保真度 DINO：LoRA 0.7324 → 跳层 30% 0.7194（−1.8%）
-> → 跳层 50% **0.6963（−4.9%）**；CLIP-I 0.8146 → 0.7877（−3.3%）。
-> 去掉残差预计算直接跳层会崩到 DINO ≈ 0.43；跳错位置（如只跳后 50%）≈ 0.48。
-> 本复现用比例映射选层（非论文的逐数据集 masking 扫描），损失可能更大。
-> 这里只验证了速度 / 显存与数学等价性，**生产使用前务必自行做质量对比**。
+> ⚠️ **质量警示：BlockSkip 是有损近似。**
+> 原论文（FLUX，DreamBooth）主体保真度 DINO：LoRA 0.7324 → 跳层 30% 0.7194（−1.8%）→ 跳层 50% **0.6963（−4.9%）**；CLIP-I 0.8146 → 0.7877（−3.3%）。
+> 本复现用比例映射选层，损失可能更大。
+> **生产前务必自行做质量对比**。
 
 ## 用法
 
@@ -122,17 +110,17 @@ EVA = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp32"}
 
 `RESUME` / `INIT_FROM` 会跳过校准。
 
-BlockSkip（两阶段，除 `BLOCKSKIP['mode']` 外配置完全一致）：
+BlockSkip：
 
 ```python
-RESOLUTION_MODE = "patch"                 # 动态 patch 采样（可与跳层独立使用）
+RESOLUTION_MODE = "patch"                 # 动态 patch 采样
 PLANNER_KWARGS = {"smin": 512, "smax": 1024}
 
-# 阶段 1：预计算（全模型 no-grad 前向，按步存特征）
+# 阶段 1：预计算
 BLOCKSKIP = {"mode": "precompute", "skip": 0.5, "cache": "path/to/features"}
 SAVE_FORMAT = "none"
 
-# 阶段 2：训练（PRESET 自动限定到保留的中间 block）
+# 阶段 2：训练
 BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
 ```
 
@@ -174,7 +162,7 @@ BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
 
 | key | 默认 | 含义 |
 | --- | --- | --- |
-| `BLOCKSKIP["mode"]` | `"train"` | `"precompute"`（存特征）/ `"train"`（跳层训练） |
+| `BLOCKSKIP["mode"]` | `"train"` | `"precompute"`（预计算）/ `"train"`（跳层训练） |
 | `BLOCKSKIP["skip"]` | `0.5` | 跳层比例，或显式 `(n, m)`；比例按 n ≈ 0.6k 前 / m ≈ 0.4k 后拆分 |
 | `BLOCKSKIP["cache"]` | 必填 | 特征目录（每步一个文件，bf16） |
 | `PLANNER_KWARGS["smin"]` | 512 | patch 训练分辨率（`RESOLUTION_MODE="patch"`） |
@@ -241,9 +229,9 @@ RTX 3090，attn 3072×3072 / 12288 token，fwd+bwd，bf16，单层合成基准
 
 ### 质量与对齐：BlockSkip
 
-- **有损且未评估**：见上文质量警示（论文跳层 50% DINO −4.9%；本 fork 只测了速度 / 显存）。
+- **有损且未评估**：见上文质量警示（论文跳层 50% DINO −4.9%）。
 - 预计算与训练两阶段的 `SEED` / `DATASETS` / caption / dropout / `STEPS` / `GRAD_ACC` /
-  `TIMESTEP` / 分辨率设置必须完全一致；每个 micro-batch 做 sigma 相等校验，漂移立即报错。
+  `TIMESTEP` / 分辨率设置必须完全一致。
 - 拒绝 `PARALLEL != "none"`、`ALGO = "full"`、`STREAM_LOSS` / `CONCENTRATION_LOSS`、`EVA`。
 - toml 形式的 `PRESET` 不会被自动限定，需自行把 block 正则限制到保留区间。
 - 特征盘占用：每步 `2 × N_joint × 3072 × 2 B`（bf16）；512² 单样本 micro-batch 约 17 MB。

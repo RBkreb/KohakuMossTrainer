@@ -11,7 +11,7 @@
 | **NaRA** | Noise-aware Rank Adaptation: the low-rank delta varies with the denoising noise level |
 | **SORA** | Skewed Orthogonal Rotation Adaptation: diagonal calibration + near-orthogonal rotation |
 | **EVA** | Explained Variance Adaptation: initialise the input-side factors from activation SVDs |
-| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals, memory / speed-efficient fine-tuning (**lossy** — see the quality warning) |
+| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals **lossy**  |
 
 
 ## What's added
@@ -71,34 +71,23 @@ directions. It raises the starting point of convergence.
 
 ### DiT-BlockSkip
 
-A reproduction of the [paper](https://arxiv.org/abs/2603.20755); two independently
-usable components:
 
 - **Dynamic patch sampling** (`RESOLUTION_MODE = "patch"`): every sample trains at a
   fixed low resolution `smin × smin`; the crop side grows linearly with the sample's
-  sigma from `smin` to `smax` (global structure at high noise, fine detail at low
-  noise). The sigma is drawn on the host planner, seeded per occurrence, and carried
+  sigma from `smin` to `smax` . The sigma is drawn on the host planner, seeded per occurrence, and carried
   with the batch.
 - **Block skipping + residual precomputing** (`BLOCKSKIP`): skip the first n + last m
   joint blocks and train LoRA on the kept middle only. The frozen front is replayed
   from an exact cached absolute feature; the skipped tail from a cached residual
-  `Δ = f_L − f_{L−m}` added back (paper Eq. 3). The precompute and train stages share
-  one data / sigma / noise stream, with a per-micro-batch sigma equality check. The
-  export is an ordinary subset-of-blocks LoRA: **inference has no extra overhead**.
+  `Δ = f_L − f_{L−m}` added back. The precompute and train stages share
+  one data / sigma / noise stream, with a per-micro-batch sigma equality check.
 
-Measured on this fork's box (3090 + 4060, sft-bf16, batch 1 × grad_acc 4): patch +
-50% skipping runs **3.82×** faster per step than the 1024 LoRA baseline, peak VRAM
-−28%; the net gain including precompute amortises with run length (1.46× at 60 steps,
-≈3.2× at 500). Details: [docs/internals/blockskip.md](docs/internals/blockskip.md).
-
-> ⚠️ **Quality warning: BlockSkip is a lossy approximation, and this fork ran no
-> quality evaluation.** The paper's own subject-fidelity numbers (FLUX, DreamBooth):
-> DINO LoRA 0.7324 → 30% skipping 0.7194 (−1.8%) → 50% skipping **0.6963 (−4.9%)**;
-> CLIP-I 0.8146 → 0.7877 (−3.3%). Skipping without the residual features collapses to
+> ⚠️ **Quality warning: BlockSkip is a lossy approximation
+> ** The paper's own subject-fidelity numbers (FLUX, DreamBooth):
+> DINO LoRA 0.7324 → 30% skipping 0.7194 (−1.8%) → 50% skipping **0.6963 (−4.9%)**;CLIP-I 0.8146 → 0.7877 (−3.3%). Skipping without the residual features collapses to
 > DINO ≈ 0.43; skipping the wrong positions (e.g. only the last 50%) ≈ 0.48. This
 > reproduction selects blocks by a proportional split rather than the paper's
-> per-dataset masking sweep, so the loss here may be larger. Only speed / VRAM and
-> mathematical equivalence were verified — **run your own quality comparison before
+> per-dataset masking sweep, so the loss here may be larger. **run your own quality comparison before
 > production use.**
 
 ## Usage
