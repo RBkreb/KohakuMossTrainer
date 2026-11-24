@@ -334,10 +334,13 @@ def worker(
     streamed = None if feed is None else loader
     depth = resolve_config(k["VARIANT"], k["ARCH_OVERRIDES"] or None).depth
     bs = blockskip.spec(k, depth)
-    if bs is not None and bs.mode == "train":
+    if bs is not None:
+        # Both stages share the restricted set: EVA calibrates the same layers and
+        # consumes the same loader / RNG prefix in precompute and train.
         k["PRESET"] = blockskip.restrict_preset(k["PRESET"], bs.n, bs.m, depth)
         log.info(
-            f"blockskip: LoRA targets restricted to blocks [{bs.n}, {depth - bs.m})"
+            f"blockskip ({bs.mode}): LoRA targets restricted to blocks "
+            f"[{bs.n}, {depth - bs.m})"
         )
     with timed(log, "building model, adapters and encoders"):
         built = build_model(

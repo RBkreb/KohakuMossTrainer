@@ -131,7 +131,9 @@ STREAM_LOSS = {}
 # kept middle only. Two runs with the SAME seed / data / STEPS / GRAD_ACC / TIMESTEP:
 #   {"mode": "precompute", "skip": 0.5, "cache": "<dir>"}  (full no-grad forwards, stores features)
 #   {"mode": "train", "skip": 0.5, "cache": "<dir>"}       (PRESET auto-restricted to kept blocks)
-# "skip": ratio of blocks, or an explicit (n, m). Needs PARALLEL="none", no STREAM_LOSS / EVA.
+# "skip": ratio of blocks, or an explicit (n, m). Needs PARALLEL="none", no STREAM_LOSS.
+# EVA coexists: PRESET is restricted in BOTH stages, so EVA calibrates the kept blocks
+# identically (keep EVA knobs equal across the two runs).
 BLOCKSKIP = {}
 CONCENTRATION_LOSS = {}  # the "concentration" term alone (set one of the two)
 STREAM_LOSS_PROBE = 0  # every N steps: per-term gradient norms + cosines; 0 = off

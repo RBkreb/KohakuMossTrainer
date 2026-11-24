@@ -68,9 +68,12 @@ BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "D:/features/run1"}
 ```
 
 Both runs must share `SEED`, `DATASETS`, caption / dropout settings, `STEPS`,
-`GRAD_ACC`, `TIMESTEP` / `TIMESTEP_KWARGS` and the resolution mode: the precompute
-replays the training loop's exact batch order, sigmas and noise (the sigma sampler and
-the loader are seeded pure functions). Every training micro-batch checks its sigma
+`GRAD_ACC`, `TIMESTEP` / `TIMESTEP_KWARGS`, the resolution mode and — when EVA is on —
+the EVA knobs: the precompute replays the training loop's exact batch order, sigmas
+and noise (the sigma sampler and the loader are seeded pure functions). EVA
+calibration runs before the loop and consumes the loader prefix plus sigma / noise
+draws; because the preset is restricted in *both* stages, it calibrates the same layer
+set and consumes the same prefix in each. Every training micro-batch checks its sigma
 against the stored one (`torch.equal`) and **fails loudly** on drift — misaligned
 features would otherwise train silently on garbage.
 
@@ -94,7 +97,11 @@ prefetches the next step's file on a background thread.
   gain is largest when the kept-block count approaches `STREAM_RESIDENT` (the ring
   stops thrashing).
 - Refused at build: `PARALLEL != "none"`, `ALGO = "full"`, `STREAM_LOSS` /
-  `CONCENTRATION_LOSS` (their hooks live on skipped blocks), `EVA`.
+  `CONCENTRATION_LOSS` (their hooks live on skipped blocks).
+- EVA coexists: the preset restriction applies to both stages, so EVA calibrates the
+  kept blocks only and initialises exactly the factors that will be trained; keep the
+  EVA knobs identical across the two runs. Without BlockSkip, EVA's behaviour is
+  unchanged.
 - Sampling / validation during a train run use the full model (the skip lives in the
   training forward only).
 - The `Throughput` callback's TFLOP/s model assumes all blocks run; under BlockSkip it

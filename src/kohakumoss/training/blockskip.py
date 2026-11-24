@@ -72,8 +72,6 @@ def spec(k: dict, depth: int) -> BlockSkipSpec | None:
         raise ValueError("BLOCKSKIP is adapter-only (ALGO != 'full')")
     if k.get("STREAM_LOSS") or k.get("CONCENTRATION_LOSS"):
         raise ValueError("BLOCKSKIP does not support stream penalties (skipped blocks)")
-    if k.get("EVA"):
-        raise ValueError("BLOCKSKIP does not support EVA calibration")
     return BlockSkipSpec(mode, n, m, str(cache))
 
 

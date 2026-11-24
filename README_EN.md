@@ -256,8 +256,11 @@ The rotation (Post-Ortho) is the main cost: it reads and writes the whole
 - The precompute and train stages must share `SEED` / `DATASETS` / caption / dropout /
   `STEPS` / `GRAD_ACC` / `TIMESTEP` / resolution settings exactly; every micro-batch
   checks sigma equality and fails loudly on drift.
-- Refused: `PARALLEL != "none"`, `ALGO = "full"`, `STREAM_LOSS` / `CONCENTRATION_LOSS`,
-  `EVA`.
+- Refused: `PARALLEL != "none"`, `ALGO = "full"`, `STREAM_LOSS` / `CONCENTRATION_LOSS`.
+- **EVA coexists with BlockSkip**: both stages restrict `PRESET` to the kept middle
+  blocks, so EVA calibrates only those layers; keep the EVA knobs identical across the
+  two runs (the calibration then consumes the same data / RNG prefix, and the
+  per-micro-batch sigma check guards the rest). Without BlockSkip, EVA is unchanged.
 - A toml `PRESET` is not auto-restricted: limit its block patterns to the kept range
   yourself.
 - Feature disk cost: `2 × N_joint × 3072 × 2 B` per step (bf16); ~17 MB per 512²

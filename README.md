@@ -232,7 +232,10 @@ RTX 3090，attn 3072×3072 / 12288 token，fwd+bwd，bf16，单层合成基准
 - **有损且未评估**：见上文质量警示（论文跳层 50% DINO −4.9%）。
 - 预计算与训练两阶段的 `SEED` / `DATASETS` / caption / dropout / `STEPS` / `GRAD_ACC` /
   `TIMESTEP` / 分辨率设置必须完全一致。
-- 拒绝 `PARALLEL != "none"`、`ALGO = "full"`、`STREAM_LOSS` / `CONCENTRATION_LOSS`、`EVA`。
+- 拒绝 `PARALLEL != "none"`、`ALGO = "full"`、`STREAM_LOSS` / `CONCENTRATION_LOSS`。
+- **EVA 可与 BlockSkip 共存**：两阶段都会把 `PRESET` 限定到保留的中间 block，EVA
+  只校准这些层；两阶段的 EVA 参数必须相同（EVA 校准消耗的数据 / 随机数流随之一致，
+  逐 micro-batch sigma 校验兜底）。无 BlockSkip 时 EVA 行为不变。
 - toml 形式的 `PRESET` 不会被自动限定，需自行把 block 正则限制到保留区间。
 - 特征盘占用：每步 `2 × N_joint × 3072 × 2 B`（bf16）；512² 单样本 micro-batch 约 17 MB。
 - `Throughput` 的 TFLOP/s 按全层估算，跳层时偏高；step_time / tokens/s / VRAM 不受影响。
