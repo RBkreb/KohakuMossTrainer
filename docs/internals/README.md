@@ -22,4 +22,5 @@ does on the device. Start from the [concepts](../concepts/README.md) and
 | | [adapter-sora.md](adapter-sora.md) | SORA: Post-Ortho rotation and Pre-Diag base scale, their forwards, exports and cost |
 | | [adapter-eva.md](adapter-eva.md) | EVA: activation-SVD calibration and input-factor initialisation |
 | training | [blockskip.md](blockskip.md) | DiT-BlockSkip: dynamic patch sampling, block skipping with precomputed residual features, the two-stage alignment contract, measured gain and quality warning |
+| | [quality.md](quality.md) | QUALITY_CHECK: static SVIR + excess-kurtosis inspection of the Wdown factors at every checkpoint write |
 | multi-GPU | [distributed-launch.md](distributed-launch.md) | process launch, store and backends (multi-GPU training is Linux-only; the CPU gloo self-checks also run on Windows) |

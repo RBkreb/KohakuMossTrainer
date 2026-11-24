@@ -56,9 +56,10 @@ def _written(what: str, write, *args):
 class CheckpointManager:
     """Owns `<output>/checkpoints/step_XXXXXXXX/` directories; called on every rank.
     `before_save` runs on every rank before each save (e.g. flushing the online cache
-    writer), `after_save(step, path)` on every rank after it (path: the checkpoint
-    directory on rank 0, None elsewhere; e.g. the checkpoint exports); `devices` are
-    this rank's devices whose CUDA RNG state is kept."""
+    writer), `after_save(step, path, parts)` on every rank after it (path: the
+    checkpoint directory on rank 0, None elsewhere; parts: the saved state dicts of
+    `save`; e.g. the checkpoint exports and the quality report); `devices` are this
+    rank's devices whose CUDA RNG state is kept."""
 
     def __init__(
         self,
@@ -115,7 +116,7 @@ class CheckpointManager:
         if not ranks_agree("checkpoint-main", path is not False):
             return self._skipped(step, partial, "rank 0 could not write it")
         self.last_saved = step
-        self.after_save(step, path)
+        self.after_save(step, path, parts)
         return path
 
     def _rank_files(self, partial: Path, rng: dict, optim: dict | None) -> bool:

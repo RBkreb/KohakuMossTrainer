@@ -60,6 +60,7 @@ from kohakumoss.training.build.loop import (
     build_recorder,
     build_step,
     build_writer,
+    final_checkpoint,
     fixed_batches,
     resumed_from,
     validation_data_config,
@@ -85,6 +86,11 @@ from kohakumoss.training.exports import (
 from kohakumoss.training.knobs import check, default_device_type, is_full, run_name
 from kohakumoss.training.layouts import Layout, layout_of
 from kohakumoss.training.memory.optimizers import close_memory
+from kohakumoss.training.quality import (
+    after_save_quality,
+    chain_after_save,
+    final_quality,
+)
 from kohakumoss.training.state import TrainState
 from kohakumoss.training.step import LayoutTransform
 from kohakumoss.tuning.prewarm import prewarm_devices, release_workspaces, tunes
@@ -425,7 +431,10 @@ def worker(
     rng_devices = stage_devices if layout.stage_rng else warm
     ckpt = build_checkpoints(k, output_dir, ema, is_main, writer, rank, rng_devices)
     parts = _parts(ctx, (ema, bundle, step, loader), names)
-    ckpt.after_save = checkpoint_exports(k, layout, built, parts, is_main)
+    ckpt.after_save = chain_after_save(
+        checkpoint_exports(k, layout, built, parts, is_main),
+        after_save_quality(k, output_dir, is_main),
+    )
     rank_cbs = _rank_callbacks(ctx, [hooks.timing, *sources], share, traced)
     runner = build_callbacks(
         ctx,
@@ -563,6 +572,8 @@ def _export(
         return
     root = Path(output_dir) / "export"
     export_into(k, layout, built, parts, state.step, root, is_main)
+    if not final_checkpoint(k):
+        final_quality(k, parts, state, output_dir, is_main)
 
 
 def checkpoint_exports(k: dict, layout: Layout, built, parts, is_main: bool):
@@ -571,7 +582,9 @@ def checkpoint_exports(k: dict, layout: Layout, built, parts, is_main: bool):
     if not k["CHECKPOINT_EXPORT"] or k["SAVE_FORMAT"] == "none":
         return nothing
 
-    def after_save(step: int, path: Path | None) -> None:
+    def after_save(
+        step: int, path: Path | None, state_parts: dict | None = None
+    ) -> None:
         root = (path or Path()) / "export"
         export_into(k, layout, built, parts, step, root, is_main)
 

@@ -126,6 +126,19 @@ BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
 
 两阶段的 `SEED` / `DATASETS` / `STEPS` / `GRAD_ACC` / `TIMESTEP` / 分辨率设置必须一致。
 
+静态质量检查（`QUALITY_CHECK`）：
+
+```python
+QUALITY_CHECK = True   # 或 {"tau": 3.0, "tau_low_rank": 3.5, "ema": False, "top": 5}
+```
+
+每次写 checkpoint（以及无 final checkpoint 时的收尾导出）对保存的 `Wdown` 因子计算
+SVIR（奇异值侵入比）与 EK（超额峰度）：谱能量集中 → 中/重度过拟合；EK 由负转正 →
+轻度过拟合重尾。结果逐次追加到 `<output>/quality.jsonl` 并打一行日志；只支持带
+`lora_down` 因子的算法（LoHa / LoKr / OFT 等会自动跳过）。252 层 rank-32 适配器约
+0.3 秒，纯 CPU。阈值在 SDXL / FLUX / Kolors 社区 LoRA 上标定，MOSS 上建议看同一
+run 内的跨 checkpoint 趋势，细节见 [docs/internals/quality.md](docs/internals/quality.md)。
+
 ## 详细参数
 ### NaRA 超网络参数（`ALGO_KWARGS`）
 
