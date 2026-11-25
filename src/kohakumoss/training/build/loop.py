@@ -245,6 +245,7 @@ def build_optim(
         rules=k["WD_RULES"],
         use_muon=k["OPTIMIZER"] == "muon",
         anchors=start_anchors(k, built.trainable, resumed),
+        lr_groups=k.get("LR_GROUPS"),
     )
     if keep is not None:
         groups = filter_groups(groups, keep)

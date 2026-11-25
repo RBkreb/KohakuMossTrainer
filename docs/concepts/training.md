@@ -333,6 +333,14 @@ within 1e-6 absolute (3e-4 relative) of the fp64 table.
 - **`WD_RULES="moss"`** disables weight decay for biases, norms, 1-D tensors and the
   embedders, and applies decay-to-one (`p -= lr·wd·(p-1)`) to the last joint block's q/k
   norm weights in full finetunes.
+- **`LR_GROUPS`** maps a regex (searched anywhere in the name) to an lr multiplier; the
+  first matching pattern in dict order wins and each group's lr is `LR * multiplier`
+  (the schedule scales every group on top, and the offload / per-parameter paths keep
+  the ratios). Groups that differ only in the multiplier stay separate; a pattern that
+  matches no parameter is logged. Full FT matches the backbone's parameter names
+  (`layers.3.ffn_up_gate.weight`); adapter runs match the full factor names
+  (`lora_unet_layers_0_ffn_up_gate.lora_up.weight`, `nara_hyper.mapper.0.weight`, dots
+  in the module path are underscores) on top of `LORAPLUS_RATIO`.
 - **Weight decay target.** `WD_TARGET="zero"` is the stock decoupled decay
   (`p -= lr·wd·p`), which shrinks the pretrained weights every step. `"start"` decays
   every decayed parameter towards the weights the run started from instead
@@ -516,7 +524,7 @@ records it; the pipelines do not.
   step, and with `fused_step` the last micro-batch's backward finishes each parameter in
   place.
 - Every optimiser path keeps the parameter groups (weight-decay rules, LoRA+ up-side
-  lr), and the schedule keeps each group's lr ratio.
+  lr, `LR_GROUPS` scales), and the schedule keeps each group's lr ratio.
 - Free cached device memory stays with the allocator between steps unless
   `STEP_RELEASE` asks otherwise ([profiles.md](profiles.md#releasing-cached-memory)).
 

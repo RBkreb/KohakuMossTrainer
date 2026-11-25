@@ -149,6 +149,10 @@ TEACHER_STREAM = "compute"  # teacher residual streams: "compute" | "fp32"
 OPTIMIZER = "adamw"  # "adamw" | "adamw16" | "adamw8bit" (bitsandbytes) | "adamw8bit_kernel" (KohakuMoss 8-bit kernel) | "muon" | "prodigy" | "schedule_free"
 OPTIMIZER_KWARGS = {}
 LR = 1e-4
+# name regex -> lr multiplier, first matching pattern wins, on top of LR (and LORAPLUS_RATIO).
+# Full FT: model parameter names. Adapters: `<lycoris key>.<factor>` (dots in the module path
+# become underscores), e.g. {r"\.ffn_": 0.5, r"^nara_hyper\.": 0.1} or {r"ffn_up_gate": 0.5}
+LR_GROUPS = {}
 BETAS = (0.9, 0.95)
 EPS = 1e-8
 WEIGHT_DECAY = 0.01

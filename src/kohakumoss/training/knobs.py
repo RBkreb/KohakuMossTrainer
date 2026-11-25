@@ -2,6 +2,8 @@
 area checks live in `training.checks`; this module holds the knob set, the choices,
 the precision and memory-plan checks and `check`."""
 
+import re
+
 import torch
 
 from kohakumoss.adapters.build.config import config_from_knobs
@@ -75,6 +77,7 @@ KNOWN = frozenset(
     NUM_WORKERS SEED ALGO PRESET DIM ALPHA ALGO_KWARGS DORA DORA_DETACH NARA DROPOUT
     SORA_POST_ORTHO SORA_PRE_DIAG EVA
     ADAPTER_MODE TRAIN_NORMS TIMESTEP TIMESTEP_KWARGS LOSS LOSS_KWARGS OPTIMIZER LR
+    LR_GROUPS
     BETAS EPS WEIGHT_DECAY WD_RULES SCHEDULE GRAD_CLIP EMA PRECISION KEEP_FP32 FP16_FIX
     FP16_FIX_KWARGS
     MEMORY_PROFILE MEMORY_AUTO_FORCE MEMORY_OVERRIDES STEP_RELEASE PARALLEL DIST_BACKEND DEVICES
@@ -208,6 +211,25 @@ def _device_problems(k: dict) -> list[str]:
     return out
 
 
+def _lr_groups_problems(k: dict) -> list[str]:
+    """LR_GROUPS: a dict of name regex -> positive lr multiplier."""
+    spec = k.get("LR_GROUPS")
+    if spec is None:
+        return []
+    if not isinstance(spec, dict):
+        return [f"LR_GROUPS must be a dict of name regex -> multiplier, got {spec!r}"]
+    p = []
+    for pattern, scale in spec.items():
+        try:
+            re.compile(pattern)
+        except re.error as err:
+            p.append(f"LR_GROUPS pattern {pattern!r} is not a valid regex: {err}")
+        bad = isinstance(scale, bool) or not isinstance(scale, (int, float))
+        if bad or scale <= 0:
+            p.append(f"LR_GROUPS[{pattern!r}] must be a positive number, got {scale!r}")
+    return p
+
+
 def _value_problems(k: dict) -> list[str]:
     """Names, registries and plain value ranges."""
     p = []
@@ -234,6 +256,7 @@ def _value_problems(k: dict) -> list[str]:
             p.append(f"{name}={weighting!r} not in {WEIGHTINGS.names()}")
     if k["LR"] <= 0:
         p.append(f"LR must be positive, got {k['LR']}")
+    p += _lr_groups_problems(k)
     if k["STEPS"] <= 0 or k["GRAD_ACC"] < 1:
         p.append("STEPS must be > 0 and GRAD_ACC >= 1")
     if k["LOG_EVERY"] <= 0:

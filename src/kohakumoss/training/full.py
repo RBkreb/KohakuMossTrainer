@@ -51,6 +51,7 @@ class FullTrainable:
             decay_to_one=self.decay_to_one,
             use_muon=rules.get("use_muon", False),
             anchors=rules.get("anchors"),
+            lr_groups=rules.get("lr_groups"),
         )
 
     def state_dict(self) -> dict[str, Tensor]:

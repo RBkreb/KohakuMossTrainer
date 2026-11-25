@@ -95,7 +95,11 @@ from one transient copy of each layer's base, one layer at a time.
 - applies LoRA+ (`LORAPLUS_RATIO`): multiplies the learning rate of each kind's
   zero-initialised factors: LoCon `lora_up`, LoHa `hada_w2_a`, LoKr `lokr_w2` /
   `lokr_w2_b`, GLoRA `a2` / `b2`, DyLoRA's up blocks; T-LoRA's `p_layer`
-  (data-initialised, its output side).
+  (data-initialised, its output side);
+- applies `LR_GROUPS` (name regex -> lr multiplier, first matching pattern wins) to the
+  full factor names (`lora_unet_layers_0_ffn_up_gate.lora_up.weight`,
+  `nara_hyper.mapper.0.weight`; dots in the module path are underscores), on top of
+  `LR` and the LoRA+ ratio.
 
 ## Multiplier
 

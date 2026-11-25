@@ -313,10 +313,12 @@ class LycoAdapterSet:
     ) -> list[dict]:
         """Optimiser groups by weight-decay rule, Muon eligibility and the LoRA+ ratio
         (`lr_ratio_up`, default the configuration's) on each kind's zero-initialised
-        factors."""
+        factors; `lr_groups` (name regex -> lr multiplier) scales them on top."""
         ratio = float(kw.get("lr_ratio_up", self.config.lr_ratio_up))
         entries = list(self._entries())
-        return groups.build(entries, lr, weight_decay, rules, use_muon, ratio)
+        return groups.build(
+            entries, lr, weight_decay, rules, use_muon, ratio, kw.get("lr_groups")
+        )
 
     def state_dict(self) -> dict[str, Tensor]:
         """Raw trainable state (exact resume): every parameter and buffer by name."""
