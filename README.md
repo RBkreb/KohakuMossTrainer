@@ -11,7 +11,9 @@
 | **NaRA** | Noise-aware Rank Adaptation：低秩增量随去噪噪声水平变化 |
 | **SORA** | Skewed Orthogonal Rotation Adaptation：对角标定 + 近正交旋转 | 
 | **EVA** | Explained Variance Adaptation：用激活 SVD 初始化输入侧因子 |
-| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，**在 MOSS-Image 上质量损失接近灾难（见下文警告）** |
+| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，**在 MOSS-Image 上质量损失接近灾难** |
+| **SVIR+EK** | 每次保存权重时的静态质量检查：SVIR 谱侵入比 + EK 超额峰度 |
+| **Loraspectra(可选)** | 第 N 步的秩谱审计：调用可选的 loraspectra CLI，输出稳定秩 / 能量秩 / MP 秩与 DIM 利用率 |
 
 
 ## 新增内容
@@ -79,6 +81,30 @@ EVA = {
 >
 > **建议：质量优先的训练直接关闭 `BLOCKSKIP`；跳层时只跳头部 `(n, 0)`。**
 
+### SVIR+EK（`QUALITY_CHECK`）
+
+到达权重检查点时对`Wdown`因子做静态检查
+
+- **SVIR（奇异值侵入比）**：`#{σ > τ·median(σ)} / 有效秩`，谱能量向少数方向集中 →
+  中/重度过拟合的信号。
+- **EK（超额峰度）**：正常训练为负；重尾尖峰转正 → 轻度过拟合的信号。
+
+只对带 `lora_down` 因子的算法生效。
+
+### 秩谱审计（`RANK_CHECK`）
+
+可选的外部工具集成：第 N 步（默认 10）保存临时检查点权重，
+调用 [`loraspectra`](https://github.com/SalyyS1/loraspectra) 做谱审计，输出：
+
+- 逐层：熵有效秩 `R_EFF`、稳定秩 `R_STABLE`、99% 能量秩 `K_99%`、
+  Marchenko-Pastur 信号秩 `K_MP`、状态（`OPTIMAL` / `OVER_PARAMETERIZED` /
+  `RANK_COLLAPSED` / `DEAD_LAYER`）。
+- 全局 `guidance`：相对 `DIM` 的 `energy_use`（k99 均值 / DIM）、`mp_share`
+  （MP 秩 / DIM）与逐状态层数。
+
+需配置环境变量 `$LORASPECTRA` / `PATH`
+仅支持 `PARALLEL = "none"` 与 LoRA 类因子。
+
 ## 用法
 
 ### 训练
@@ -135,25 +161,11 @@ BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
 QUALITY_CHECK = True   # 或 {"tau": 3.0, "tau_low_rank": 3.5, "ema": False, "top": 5}
 ```
 
-每次写 checkpoint（以及无 final checkpoint 时的收尾导出）对保存的 `Wdown` 因子计算
-SVIR（奇异值侵入比）与 EK（超额峰度）：谱能量集中 → 中/重度过拟合；EK 由负转正 →
-轻度过拟合重尾。结果逐次追加到 `<output>/quality.jsonl` 并打一行日志；只支持带
-`lora_down` 因子的算法（LoHa / LoKr / OFT 等会自动跳过）。252 层 rank-32 适配器约
-0.3 秒，纯 CPU。阈值在 SDXL / FLUX / Kolors 社区 LoRA 上标定，MOSS 上建议看同一
-run 内的跨 checkpoint 趋势，细节见 [docs/internals/quality.md](docs/internals/quality.md)。
-
 秩谱审计（`RANK_CHECK`，可选外部工具）：
 
 ```python
 RANK_CHECK = {"step": 10}   # 或 True；{"step","layers","keep","timeout"}
 ```
-
-第 N 步把当前 LoRA 因子写成临时 safetensors，调用 `loraspectra` 审计并写入
-`<output>/rank_check.json`（逐层稳定秩 / 熵有效秩 / k99 能量秩 / MP 噪声秩 / 状态，
-以及相对 `DIM` 的利用率）。工具通过 `$LORASPECTRA` 或 PATH 查找，未安装时只打一条
-warning 跳过（`cargo install loraspectra`）；仅支持 `PARALLEL="none"` 与 LoRA 类因子。
-注意它衡量的是早期 delta 的秩利用率，梯度谱（G0）判秩见
-[docs/internals/rank-check.md](docs/internals/rank-check.md)。
 
 ## 详细参数
 ### NaRA 超网络参数（`ALGO_KWARGS`）
@@ -196,6 +208,24 @@ warning 跳过（`cargo install loraspectra`）；仅支持 `PARALLEL="none"` �
 | `BLOCKSKIP["cache"]` | 必填 | 特征目录（每步一个文件，bf16） |
 | `PLANNER_KWARGS["smin"]` | 512 | patch 训练分辨率（`RESOLUTION_MODE="patch"`） |
 | `PLANNER_KWARGS["smax"]` | 1024 | sigma=1 时的裁剪边长上限 |
+
+### 静态质量检查参数（`QUALITY_CHECK`）
+
+| key | 默认 | 含义 |
+| --- | --- | --- |
+| `tau` | 3.0 | SVIR 的阈值系数（`σ > τ·median(σ)` 计为侵入） |
+| `tau_low_rank` | 3.5 | 秩 `≤ 4` 的因子使用的阈值系数 |
+| `ema` | `False` | 同时检查 EMA 权重 |
+| `top` | 5 | 每行记录的最差 EK 层数 |
+
+### 秩谱审计参数（`RANK_CHECK`）
+
+| key | 默认 | 含义 |
+| --- | --- | --- |
+| `step` | 10 | 审计步 |
+| `layers` | `True` | 解析逐层表 |
+| `keep` | `False` | 保留临时 adapter 文件 |
+| `timeout` | 300.0 | 每次 CLI 调用的超时（秒） |
 
 ## 推理
 ### ComfyUI 推理
@@ -269,7 +299,14 @@ RTX 3090，attn 3072×3072 / 12288 token，fwd+bwd，bf16，单层合成基准
   逐 micro-batch sigma 校验兜底）。无 BlockSkip 时 EVA 行为不变。
 - toml 形式的 `PRESET` 不会被自动限定，需自行把 block 正则限制到保留区间。
 - 特征盘占用：每步 `2 × N_joint × 3072 × 2 B`（bf16）；512² 单样本 micro-batch 约 17 MB。
-- `Throughput` 的 TFLOP/s 按全层估算，跳层时偏高；step_time / tokens/s / VRAM 不受影响。
+
+### 质量检查与秩谱审计
+
+- `QUALITY_CHECK` 只检查 `Wdown` 因子：不覆盖 NaRA 的 `C(sigma)`、DoRA magnitude
+- `τ` 与 EK 判别区间在 SDXL / FLUX / Kolors 社区 LoRA 先验；本实现的
+  `watch` 规则（SVIR 层均值 > 5%、EK 中位数 > 0）是保守设置，未实现线性融合与三档分级。仅作方向性参考。
+- `RANK_CHECK` 依赖可选 CLI，只支持
+  `PARALLEL = "none"` 与 LoRA 类因子。早期步数越小 delta 越接近初始化，噪声也越大。
 
 ### 其他
 
@@ -380,6 +417,26 @@ EVA 更改训练起步初始值。
 ```
 
 - 论文：<https://arxiv.org/abs/2603.20755>
+
+### SVIR + EK
+
+```bibtex
+@inproceedings{liu2026static,
+  title     = {Dual-Dimensional Static Quality Inspection Method for Diffusion Model {LoRA} Based on Singular Value Intrusion Ratio and Excess Kurtosis},
+  author    = {Liu, Xiaohu and Sun, Ronghui},
+  booktitle = {2026 8th International Conference on Artificial Intelligence Technologies and Applications (ICAITA)},
+  pages     = {94--101},
+  year      = {2026},
+  doi       = {10.1109/ICAITA71179.2026.11736932}
+}
+```
+
+- DOI：<https://doi.org/10.1109/ICAITA71179.2026.11736932>
+
+### loraspectra — LoRA 谱审计 CLI
+
+- 安装：`cargo install loraspectra`
+- 仓库：<https://github.com/SalyyS1/loraspectra>
 
 ## License
 

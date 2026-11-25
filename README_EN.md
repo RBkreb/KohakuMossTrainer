@@ -11,7 +11,9 @@
 | **NaRA** | Noise-aware Rank Adaptation: the low-rank delta varies with the denoising noise level |
 | **SORA** | Skewed Orthogonal Rotation Adaptation: diagonal calibration + near-orthogonal rotation |
 | **EVA** | Explained Variance Adaptation: initialise the input-side factors from activation SVDs |
-| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals — **near-catastrophic quality loss on MOSS-Image (see warning below)** |
+| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals — **near-catastrophic quality loss on MOSS-Image** |
+| **SVIR+EK** | static quality inspection at every checkpoint write: SVIR spectral intrusion ratio + EK excess kurtosis, no inference |
+| **Loraspectra(optional)** | rank audit at step N through the optional loraspectra CLI: stable rank / energy rank / MP rank and DIM utilisation |
 
 
 ## What's added
@@ -90,6 +92,33 @@ directions. It raises the starting point of convergence.
 >
 > **Recommendation: disable `BLOCKSKIP` for quality runs** if you skip at all, **head only `(n, 0)`** 
 
+### SVIR+EK (`QUALITY_CHECK`)
+
+At every checkpoint write check the `Wdown`
+
+- **SVIR (singular value intrusion ratio)**: `#{σ > τ·median(σ)} / effective rank`;
+  energy concentrating on a few directions is the moderate/severe-overfitting signal.
+- **EK (excess kurtosis)**: negative under normal weight-decayed training; a heavy
+  spiky tail turns it positive, the mild-overfitting signal.
+
+Only algorithms with `lora_down` factors are covered.
+
+### Rank audit (`RANK_CHECK`)
+
+Optional external-tool integration: at step N (default 10) the current LoRA factors are
+written to a temporary safetensors and audited with
+[`loraspectra`](https://github.com/SalyyS1/loraspectra):
+
+- Per layer: von Neumann effective rank `R_EFF`, stable rank `R_STABLE`, 99% energy
+  rank `K_99%`, Marchenko-Pastur signal rank `K_MP`, and a status (`OPTIMAL` /
+  `OVER_PARAMETERIZED` / `RANK_COLLAPSED` / `DEAD_LAYER`).
+- Global `guidance`: `energy_use` (mean k99 / `DIM`), `mp_share` (MP rank / `DIM`) and
+  the per-status layer counts.
+
+
+Need the environment variable `$LORASPECTRA` / `PATH`
+Only `PARALLEL = "none"` and LoRA-style factors are supported.
+
 ## Usage
 
 ### Training
@@ -124,22 +153,34 @@ EVA = {"batches": 32, "min_batches": 4, "sim_thresh": 0.99, "precision": "fp32"}
 
 `RESUME` / `INIT_FROM` skip the calibration.
 
-BlockSkip (two stages; identical configs except `BLOCKSKIP['mode']`):
+BlockSkip:
 
 ```python
-RESOLUTION_MODE = "patch"                 # dynamic patch sampling (usable on its own)
+RESOLUTION_MODE = "patch"                 # dynamic patch sampling 
 PLANNER_KWARGS = {"smin": 512, "smax": 1024}
 
-# stage 1: precompute (full no-grad forwards, features stored per step)
+# stage 1: precompute 
 BLOCKSKIP = {"mode": "precompute", "skip": 0.5, "cache": "path/to/features"}
 SAVE_FORMAT = "none"
 
-# stage 2: train (PRESET auto-restricted to the kept middle blocks)
+# stage 2: train 
 BLOCKSKIP = {"mode": "train", "skip": 0.5, "cache": "path/to/features"}
 ```
 
 Both stages must share `SEED` / `DATASETS` / `STEPS` / `GRAD_ACC` / `TIMESTEP` and the
 resolution settings.
+
+Static quality check (`QUALITY_CHECK`):
+
+```python
+QUALITY_CHECK = True   # or {"tau": 3.0, "tau_low_rank": 3.5, "ema": False, "top": 5}
+```
+
+Rank audit (`RANK_CHECK`, optional external tool):
+
+```python
+RANK_CHECK = {"step": 10}   # or True; {"step","layers","keep","timeout"}
+```
 
 ## Parameters
 
@@ -183,6 +224,24 @@ small; larger `r_p` has diminishing returns while inference cost rises monotonic
 | `BLOCKSKIP["cache"]` | required | feature directory (one bf16 file per step) |
 | `PLANNER_KWARGS["smin"]` | 512 | patch training resolution (`RESOLUTION_MODE="patch"`) |
 | `PLANNER_KWARGS["smax"]` | 1024 | crop side at sigma=1 |
+
+### Static quality check parameters (`QUALITY_CHECK`)
+
+| key | default | meaning |
+| --- | --- | --- |
+| `tau` | 3.0 | SVIR threshold factor (`σ > τ·median(σ)` counts as an intrusion) |
+| `tau_low_rank` | 3.5 | the factor for layers of rank `<= 4` |
+| `ema` | `False` | also inspect the EMA weights |
+| `top` | 5 | worst-EK layers recorded per row |
+
+### Rank audit parameters (`RANK_CHECK`)
+
+| key | default | meaning |
+| --- | --- | --- |
+| `step` | 10 | the one-shot audit step |
+| `layers` | `True` | also parse the per-layer table |
+| `keep` | `False` | keep the temporary adapter file |
+| `timeout` | 300.0 | per-CLI-call timeout in seconds |
 
 ## Inference
 
@@ -266,8 +325,17 @@ The rotation (Post-Ortho) is the main cost: it reads and writes the whole
   yourself.
 - Feature disk cost: `2 × N_joint × 3072 × 2 B` per step (bf16); ~17 MB per 512²
   1-sample micro-batch.
-- The `Throughput` TFLOP/s model assumes all blocks run and reads high under skipping;
-  step_time / tokens_per_s / VRAM rows are unaffected.
+### Quality check and rank audit
+
+- `QUALITY_CHECK` inspects the `Wdown` factors only: NaRA's `C(sigma)`, the DoRA
+- `τ` and EK bands were calibrated on SDXL / FLUX / Kolors community
+  LoRAs; this implementation's `watch` rules (SVIR layer mean > 5%, EK median > 0)
+  are conservative proxies, without linear fusion or three-grade
+  classification. On MOSS treat them as directional.
+- `RANK_CHECK` depends on the optional CLI (verified against loraspectra v1.8.0) and
+  supports `PARALLEL = "none"` with LoRA-style factors only; it audits the early
+  delta's utilisation at step N, not the gradient-spectrum rank rule, and the earlier
+  the step the noisier the delta.
 
 ### Other
 
@@ -389,6 +457,26 @@ EVA changes the starting values training begins from.
 ```
 
 - Paper: <https://arxiv.org/abs/2603.20755>
+
+### SVIR + EK
+
+```bibtex
+@inproceedings{liu2026static,
+  title     = {Dual-Dimensional Static Quality Inspection Method for Diffusion Model {LoRA} Based on Singular Value Intrusion Ratio and Excess Kurtosis},
+  author    = {Liu, Xiaohu and Sun, Ronghui},
+  booktitle = {2026 8th International Conference on Artificial Intelligence Technologies and Applications (ICAITA)},
+  pages     = {94--101},
+  year      = {2026},
+  doi       = {10.1109/ICAITA71179.2026.11736932}
+}
+```
+
+- DOI: <https://doi.org/10.1109/ICAITA71179.2026.11736932>
+
+### loraspectra — LoRA spectral audit CLI
+
+- Install: `cargo install loraspectra`
+- Repository: <https://github.com/SalyyS1/loraspectra>
 
 ## License
 
