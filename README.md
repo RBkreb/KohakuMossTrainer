@@ -11,7 +11,7 @@
 | **NaRA** | Noise-aware Rank Adaptation：低秩增量随去噪噪声水平变化 |
 | **SORA** | Skewed Orthogonal Rotation Adaptation：对角标定 + 近正交旋转 | 
 | **EVA** | Explained Variance Adaptation：用激活 SVD 初始化输入侧因子 |
-| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，**有质量损失** |
+| **BlockSkip** | DiT-BlockSkip：动态 patch 采样 + 跳层残差预计算，**在 MOSS-Image 上质量损失接近灾难（见下文警告）** |
 
 
 ## 新增内容
@@ -71,10 +71,13 @@ EVA = {
   `smin × smin` 训练；裁剪边长随该样本的 sigma 从 `smin` 线性增大到 `smax`，sigma 在 host 规划期按种子预采样并随批携带。
 - **跳层 + 残差预计算** `BLOCKSKIP` ：跳过前 n + 后 m 个 joint block。前段特征冻结精确、直接缓存绝对值；后段缓存残差 `Δ = f_L − f_{L−m}`。预计算与训练两阶段共用数据 / sigma / 噪声流，每个 micro-batch 校验 sigma 对齐。
 
-> ⚠️ **质量警示：BlockSkip 是有损近似。**
-> 原论文（FLUX，DreamBooth）主体保真度 DINO：LoRA 0.7324 → 跳层 30% 0.7194（−1.8%）→ 跳层 50% **0.6963（−4.9%）**；CLIP-I 0.8146 → 0.7877（−3.3%）。
-> 本复现用比例映射选层，损失可能更大。
-> **生产前务必自行做质量对比**。
+> ⚠️ **质量警示：BlockSkip 在 MOSS-Image 上的损失几乎灾难，质量优先的训练请不要启用。**
+> MOSS-Image 尾段残差 `‖f_L − f_{L−m}‖`
+> 是输入流本身的 **1.2–1.4 倍**，初始化时缓存的 delta 与训练中漂移的中间
+> 流严重失配，训练目标与推理行为双重带偏。一次 1200 步、50% 对称跳层的训练产出
+> 大量**肢体缺失、眼睛缺失**的图。头部跳层数学上精确，但仍丢弃了 31% 块的适配容量。
+>
+> **建议：质量优先的训练直接关闭 `BLOCKSKIP`；跳层时只跳头部 `(n, 0)`。**
 
 ## 用法
 
@@ -255,7 +258,9 @@ RTX 3090，attn 3072×3072 / 12288 token，fwd+bwd，bf16，单层合成基准
 
 ### 质量与对齐：BlockSkip
 
-- **有损且未评估**：见上文质量警示（论文跳层 50% DINO −4.9%）。
+- **有损，且已在 MOSS-Image 上实测为灾难性**：见上文质量警示（尾残差为输入流的
+  1.2–1.4 倍，Eq.3 假设失效；1200 步 50% 跳层出现肢体 / 眼睛缺失）。质量优先时
+  关闭 `BLOCKSKIP`。
 - 预计算与训练两阶段的 `SEED` / `DATASETS` / caption / dropout / `STEPS` / `GRAD_ACC` /
   `TIMESTEP` / 分辨率设置必须完全一致。
 - 拒绝 `PARALLEL != "none"`、`ALGO = "full"`、`STREAM_LOSS` / `CONCENTRATION_LOSS`。

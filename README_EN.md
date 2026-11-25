@@ -11,7 +11,7 @@
 | **NaRA** | Noise-aware Rank Adaptation: the low-rank delta varies with the denoising noise level |
 | **SORA** | Skewed Orthogonal Rotation Adaptation: diagonal calibration + near-orthogonal rotation |
 | **EVA** | Explained Variance Adaptation: initialise the input-side factors from activation SVDs |
-| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals **lossy**  |
+| **BlockSkip** | DiT-BlockSkip: dynamic patch sampling + block skipping with precomputed residuals — **near-catastrophic quality loss on MOSS-Image (see warning below)** |
 
 
 ## What's added
@@ -82,13 +82,13 @@ directions. It raises the starting point of convergence.
   `Δ = f_L − f_{L−m}` added back. The precompute and train stages share
   one data / sigma / noise stream, with a per-micro-batch sigma equality check.
 
-> ⚠️ **Quality warning: BlockSkip is a lossy approximation
-> ** The paper's own subject-fidelity numbers (FLUX, DreamBooth):
-> DINO LoRA 0.7324 → 30% skipping 0.7194 (−1.8%) → 50% skipping **0.6963 (−4.9%)**;CLIP-I 0.8146 → 0.7877 (−3.3%). Skipping without the residual features collapses to
-> DINO ≈ 0.43; skipping the wrong positions (e.g. only the last 50%) ≈ 0.48. This
-> reproduction selects blocks by a proportional split rather than the paper's
-> per-dataset masking sweep, so the loss here may be larger. **run your own quality comparison before
-> production use.**
+> ⚠️ **Quality warning: BlockSkip is near-catastrophic on MOSS-Image; keep it off for quality-first training.** 
+> the tail residual `‖f_L − f_{L−m}‖` is **1.2–1.4x the head stream itself** 
+> the drifting middle stream, corrupting both the training objective and inference
+> behaviour. A 1200-step 50% symmetric-skip run generated images with many **missing
+> limbs and eyes** . Head-only skipping is mathematically exact but still forfeits 31% of blocks' adapter capacity
+>
+> **Recommendation: disable `BLOCKSKIP` for quality runs** if you skip at all, **head only `(n, 0)`** 
 
 ## Usage
 
@@ -251,8 +251,9 @@ The rotation (Post-Ortho) is the main cost: it reads and writes the whole
 
 ### Quality and alignment: BlockSkip
 
-- **Lossy and unevaluated here**: see the quality warning above (the paper loses 4.9%
-  DINO at 50% skipping; this fork measured speed / VRAM only).
+- **Lossy, and measured near-catastrophic on MOSS-Image**: see the quality warning
+  above (tail residual 1.2–1.4x the input stream, Eq. 3 invalid; a 1200-step 50% skip
+  run produced missing limbs / eyes). Disable `BLOCKSKIP` for quality-first runs.
 - The precompute and train stages must share `SEED` / `DATASETS` / caption / dropout /
   `STEPS` / `GRAD_ACC` / `TIMESTEP` / resolution settings exactly; every micro-batch
   checks sigma equality and fails loudly on drift.

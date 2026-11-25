@@ -5,6 +5,7 @@ measured once before training and the watch flags read the drift from that basel
 instead of the paper's random-init premise. See docs/internals/quality.md."""
 
 import json
+import re
 from pathlib import Path
 
 import torch
@@ -176,6 +177,12 @@ def load_baseline(output_dir, opts: dict) -> dict | None:
     return blob["layers"]
 
 
+def _baseline_name(name: str) -> str:
+    """The baseline's key of a factor name: EMA states carry an `ema<decay>/` prefix,
+    the baseline is captured from the trainable set."""
+    return re.sub(r"^ema[^/]*/", "", name)
+
+
 def inspect_state(state: dict, opts: dict, baseline: dict | None = None) -> dict | None:
     """Layer-wise SVIR / EK of every Wdown factor in `state`, aggregated the paper's
     way (SVIR mean over layers, EK quantiles and the positive share); None without
@@ -186,9 +193,10 @@ def inspect_state(state: dict, opts: dict, baseline: dict | None = None) -> dict
     for name, t in wdown_layers(state).items():
         row = layer_metrics(t, opts["tau"], opts["tau_low_rank"])
         if row is not None:
-            if baseline is not None and name in baseline:
-                row["svir_delta"] = row["svir"] - baseline[name]["svir"]
-                row["ek_delta"] = row["ek"] - baseline[name]["ek"]
+            key = _baseline_name(name)
+            if baseline is not None and key in baseline:
+                row["svir_delta"] = row["svir"] - baseline[key]["svir"]
+                row["ek_delta"] = row["ek"] - baseline[key]["ek"]
             layers[name] = row
     if not layers:
         return None
